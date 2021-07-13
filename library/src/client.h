@@ -29,7 +29,7 @@ class ClientImpl : public Client {
   VPNConfig vpn_config_;
   bool auto_reconnect_;
 
-  std::shared_ptr<ReliableLayer> reliable_layer_;
+  std::shared_ptr<transport::ReliableLayer> reliable_layer_;
 
  public:
   ClientImpl(std::shared_ptr<::uvw::Loop> loop, std::shared_ptr<Logger> logger);

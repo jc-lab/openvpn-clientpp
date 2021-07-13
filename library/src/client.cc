@@ -62,10 +62,10 @@ bool ClientImpl::connect(const VPNConfig &vpn_config) {
 
 bool ClientImpl::connectImpl() {
   std::shared_ptr<ClientImpl> self(self_.lock());
-  std::shared_ptr<Transport> transport;
+  std::shared_ptr<transport::Transport> transport;
 
   if (vpn_config_.protocol == kTransportTcp) {
-    transport = TransportTCP::create(loop_, logger_);
+    transport = transport::TransportTCP::create(loop_, logger_);
   } else if (vpn_config_.protocol == kTransportUdp) {
 //    transport = TransportUDP::create(loop_, logger_);
   } else {
@@ -102,23 +102,23 @@ bool ClientImpl::connectImpl() {
 //    transport->write(std::move(event.data), event.length);
 //  });
 
-  reliable_layer_ = ReliableLayer::create(transport, logger_);
+  reliable_layer_ = transport::ReliableLayer::create(transport, logger_);
   reliable_layer_->data(self_.lock());
-  reliable_layer_->onceConnectEvent([](Transport *transport) -> void {
+  reliable_layer_->onceConnectEvent([](transport::Transport *transport) -> void {
     std::shared_ptr<ClientImpl> self(transport->template data<ClientImpl>());
     self->logger_->logf(Logger::kLogDebug, "Client: ReliableLayer: handshaked");
     self->doKeyShare();
     //TODO: do 대신 State Machine 으로 변경
   });
-  reliable_layer_->onceCloseEvent([](Transport *transport) -> void {
+  reliable_layer_->onceCloseEvent([](transport::Transport *transport) -> void {
     std::shared_ptr<ClientImpl> self(transport->template data<ClientImpl>());
     self->logger_->logf(Logger::kLogDebug, "Client: CloseEvent");
   });
-  reliable_layer_->onceCleanupEvent([](Transport *transport) -> void {
+  reliable_layer_->onceCleanupEvent([](transport::Transport *transport) -> void {
     std::shared_ptr<ClientImpl> self(transport->template data<ClientImpl>());
     self->logger_->logf(Logger::kLogDebug, "Client: CleanupEvent");
   });
-  reliable_layer_->onceErrorEvent([](Transport *transport, uvw::ErrorEvent &event) -> void {
+  reliable_layer_->onceErrorEvent([](transport::Transport *transport, uvw::ErrorEvent &event) -> void {
     std::shared_ptr<ClientImpl> self(transport->template data<ClientImpl>());
     self->logger_->logf(Logger::kLogDebug, "Client: ErrorEvent: %s", event.what());
     transport->close();

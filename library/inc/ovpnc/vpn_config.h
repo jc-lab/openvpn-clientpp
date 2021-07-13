@@ -55,6 +55,6 @@ struct VPNConfig {
   // compress
 };
 
-}
+} // namespace ovpnc
 
 #endif //OVPNC_VPN_CONFIG_H_

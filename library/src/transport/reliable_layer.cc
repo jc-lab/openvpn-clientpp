@@ -17,6 +17,7 @@
 #include "../protocol/reliable.h"
 
 namespace ovpnc {
+namespace transport {
 
 ReliableLayer::ReliableLayer(std::shared_ptr<Transport> transport, std::shared_ptr<Logger> logger) :
     transport_(transport),
@@ -374,5 +375,6 @@ void ReliableLayer::writeRawPacket(std::unique_ptr<char[]> data, unsigned int le
   transport_->write(std::move(data), len);
 }
 
+} // namespace transport
 } // namespace ovpnc
 

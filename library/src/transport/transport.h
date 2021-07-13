@@ -18,6 +18,7 @@
 #include "../protocol/reliable.h"
 
 namespace ovpnc {
+namespace transport {
 
 class Transport {
  protected:
@@ -78,6 +79,7 @@ class Transport {
   virtual void close() = 0;
 };
 
+} // namespace transport
 } // namespace ovpnc
 
 #endif //OVPNC_SRC_TRANSPORT_TRANSPORT_H_

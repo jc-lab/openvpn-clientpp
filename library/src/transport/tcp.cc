@@ -9,6 +9,7 @@
 #include "tcp.h"
 
 namespace ovpnc {
+namespace transport {
 
 TransportTCP::TransportTCP(std::shared_ptr<uvw::Loop> loop, std::shared_ptr<Logger> logger) :
     logger_(logger),
@@ -133,4 +134,5 @@ void TransportTCP::cleanup() {
   handle_->data(nullptr);
 }
 
+} // namespace transport
 } // namespace ovpnc

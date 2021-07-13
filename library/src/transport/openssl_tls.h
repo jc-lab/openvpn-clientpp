@@ -20,6 +20,7 @@
 #include "tls_layer.h"
 
 namespace ovpnc {
+namespace transport {
 
 class OpenSslTlsLayer : public TlsLayer {
  public:
@@ -36,6 +37,7 @@ std::shared_ptr<OpenSslTlsLayer> createOpenSslTlsLayer(
     std::shared_ptr<Logger> logger
 );
 
+} // namespace transport
 } // namespace ovpnc
 
 #endif //OVPNC_SRC_TRANSPORT_OPENSSL_TLS_H_

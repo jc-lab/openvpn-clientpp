@@ -30,6 +30,10 @@ int main() {
   client->setAutoReconnect(true);
   client->connect(config);
 
+//  auto ossl_tls_layer = createOpenSslTlsLayer();
+//  ossl_tls_layer->setCustomizer();
+//  client->setTlsLayer(ossl_tls_layer);
+
   loop->run();
 
   return 0;

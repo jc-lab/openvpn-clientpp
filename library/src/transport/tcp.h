@@ -21,6 +21,7 @@
 #include "transport.h"
 
 namespace ovpnc {
+namespace transport {
 
 class TransportTCP : public Transport {
  private:
@@ -60,6 +61,7 @@ class TransportTCP : public Transport {
   void cleanup();
 };
 
+} // namespace transport
 } // namespace ovpnc
 
 #endif //OVPNC_SRC_TRANSPORT_TCP_H_

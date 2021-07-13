@@ -22,6 +22,7 @@
 #include "openssl_tls.h"
 
 namespace ovpnc {
+namespace transport {
 
 class ReliableLayer : public Transport {
  private:
@@ -102,6 +103,7 @@ class ReliableLayer : public Transport {
   void writeRawPacket(std::unique_ptr<char[]> data, unsigned int len);
 };
 
+} // namespace transport
 } // namespace ovpnc
 
 #endif //OVPNC_SRC_PROTOCOL_RELIABLE_LAYER_H_

@@ -17,6 +17,7 @@
 #include "transport.h"
 
 namespace ovpnc {
+namespace transport {
 
 class ReliableLayer;
 
@@ -88,6 +89,7 @@ class TlsLayer : public Transport {
   }
 };
 
+} // namespace transport
 } // namespace ovpnc
 
 #endif //OVPNC_SRC_TRANSPORT_TLS_LAYER_H_

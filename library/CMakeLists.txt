@@ -2,6 +2,8 @@ add_library(openvpn_clientpp
         ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/log.h
         ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/client.h
         ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/vpn_config.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/tls_provider.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/openssl_tls_provider.h
 
         ${CMAKE_CURRENT_SOURCE_DIR}/src/log.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/src/client.cc

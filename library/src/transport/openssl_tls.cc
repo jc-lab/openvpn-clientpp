@@ -15,6 +15,7 @@
 #include "reliable_layer.h"
 
 namespace ovpnc {
+namespace transport {
 
 struct SSL_Deleter {
   void operator()(SSL *p) {
@@ -278,4 +279,5 @@ std::shared_ptr<OpenSslTlsLayer> createOpenSslTlsLayer(std::shared_ptr<ReliableL
   return std::move(OpenSslTlsLayerImpl::create(std::move(parent), std::move(logger)));
 }
 
+} // namespace transport
 } // namespace ovpnc
