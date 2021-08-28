@@ -115,7 +115,7 @@ void TransportTCP::close() {
 }
 
 std::shared_ptr<TransportTCP> TransportTCP::create(std::shared_ptr<uvw::Loop> loop, std::shared_ptr<Logger> logger) {
-  std::shared_ptr<TransportTCP> instance(new TransportTCP(loop, logger));
+  std::shared_ptr<TransportTCP> instance(new TransportTCP(std::move(loop), std::move(logger)));
   instance->self_ = instance;
   instance->handle_->data(instance);
   return std::move(instance);

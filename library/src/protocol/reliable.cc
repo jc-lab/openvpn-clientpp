@@ -16,14 +16,14 @@ namespace ovpnc {
 namespace protocol {
 namespace reliable {
 
-static void serializeUint32(unsigned char *buffer, uint32_t value) {
+void serializeUint32(unsigned char *buffer, uint32_t value) {
   buffer[0] = (uint8_t) (value >> 24);
   buffer[1] = (uint8_t) (value >> 16);
   buffer[2] = (uint8_t) (value >> 8);
   buffer[3] = (uint8_t) (value);
 }
 
-static uint32_t deserializeUint32(const unsigned char *buffer) {
+uint32_t deserializeUint32(const unsigned char *buffer) {
   uint32_t value = 0;
   value |= ((uint32_t) (*(buffer++))) << 24;
   value |= ((uint32_t) (*(buffer++))) << 16;

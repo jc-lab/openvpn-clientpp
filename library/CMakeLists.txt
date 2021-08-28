@@ -4,6 +4,9 @@ add_library(openvpn_clientpp
         ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/vpn_config.h
         ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/tls_provider.h
         ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/openssl_tls_provider.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/crypto/provider.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/crypto/cipher.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/crypto/auth.h
 
         ${CMAKE_CURRENT_SOURCE_DIR}/src/log.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/src/client.cc
@@ -13,8 +16,6 @@ add_library(openvpn_clientpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/tcp.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/udp.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/udp.cc
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/openssl_tls.h
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/openssl_tls.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/tls_layer.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/tls_layer.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/reliable_layer.h
@@ -25,6 +26,17 @@ add_library(openvpn_clientpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/protocol/reliable.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/src/protocol/control.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/protocol/control.cc
+
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/openssl/openssl_tls_layer.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/openssl/openssl_tls_layer.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/openssl/openssl_tls_provider.cc
+
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/openssl_aes_gcm.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/openssl_aes_gcm.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/null_digest.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/null_digest.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/default_provider.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/default_provider.cc
         )
 
 target_include_directories(

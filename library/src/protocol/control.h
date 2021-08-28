@@ -31,6 +31,37 @@ struct KeySource {
                                  *   by both client and server. */
 };
 
+enum TlsDirection {
+  kTlsDirectionNone,
+  kTlsDirectionServer,
+  kTlsDirectionClient
+};
+
+struct DataChannelOptions {
+  std::string version; // V4 fixed
+  std::string dev_type; // tun
+  int link_mtu; // 1543 ?
+  int tun_mtu; // 1500 ?
+  std::string proto;
+  std::string cipher;
+  std::string auth;
+  int key_size; // deprecated but needed (perhaps...)
+  int key_method; // key_method version
+  TlsDirection tls_direction; // tls-server / tls-client
+
+  DataChannelOptions() :
+    version("V4"),
+    link_mtu(0),
+    tun_mtu(0),
+    key_size(0),
+    key_method(0),
+    tls_direction(kTlsDirectionNone)
+  {}
+
+  std::string serialize() const;
+  bool deserialize(const std::string& input);
+};
+
 /**
  * Key Method 2
  *

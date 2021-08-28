@@ -374,6 +374,9 @@ class DataV2Payload : public ReliablePayload {
   int deserializeFrom(const unsigned char *buffer, int length) override;
 };
 
+void serializeUint32(unsigned char *buffer, uint32_t value);
+uint32_t deserializeUint32(const unsigned char *buffer);
+
 } // namespace reliable
 } // namespace protocol
 } // namespace ovpnc

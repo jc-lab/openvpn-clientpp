@@ -14,6 +14,10 @@
 #include <memory>
 #include <functional>
 
+#include "crypto/provider.h"
+
+#include "tls_provider.h"
+
 namespace ovpnc {
 
 enum TransportProtocol {
@@ -38,13 +42,10 @@ struct VPNConfig {
   unsigned int remote_port;
   const sockaddr *sockaddr;
 
-  std::string ca;
-  CertificateFormat ca_format;
-  std::string cert;
-  CertificateFormat cert_format;
+  std::shared_ptr<crypto::Provider> crypto_provider;
 
   // key_provider
-  std::function<std::shared_ptr<KeyHandle>()> key_provider;
+  std::shared_ptr<TlsProvider> tls_provider;
 
   /**
    * "server" or empty

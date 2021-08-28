@@ -27,6 +27,12 @@ class Transport {
 
  public:
   struct DataEvent {
+    /**
+     * 0 = transport
+     * 0x11 = tls
+     */
+    int type;
+
     std::unique_ptr<char[]> data;
     unsigned int length;
 
@@ -39,6 +45,14 @@ class Transport {
      * UDP-Only
      */
     bool partial;
+
+    DataEvent() :
+    type(0), length(0), sender({}), partial(false)
+    {}
+
+    DataEvent(int arg_type, std::unique_ptr<char[]> arg_data, unsigned int arg_length, uvw::Addr arg_sender = {}, bool arg_partial = false)
+        : type(arg_type), data(std::move(arg_data)), length(arg_length), sender(std::move(arg_sender)), partial(arg_partial)
+        {}
   };
 
   typedef std::function<void(Transport *transport)> ConnectEventHandler_t;

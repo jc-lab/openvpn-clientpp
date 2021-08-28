@@ -12,12 +12,35 @@
 
 #include <memory>
 
+#include <stdint.h>
+
 namespace ovpnc {
+
+class Logger;
+class Client;
+
+namespace transport {
+
+class TlsLayer;
+class ReliableLayer;
+
+} // namespace transport
+
+class TlsCreateLayerParams {
+ public:
+  virtual ~TlsCreateLayerParams() = default;
+  virtual bool isServerMode() const = 0;
+  virtual std::shared_ptr<Client> getClient() const = 0;
+  virtual std::shared_ptr<Logger> getLogger() const = 0;
+  virtual std::shared_ptr<transport::ReliableLayer> getParent() const = 0;
+};
 
 class TlsProvider {
  public:
   virtual ~TlsProvider() = default;
-  virtual std::shared_ptr<TlsLayer>
+  virtual std::shared_ptr<transport::TlsLayer> createLayer(
+      TlsCreateLayerParams *param
+  ) const = 0;
 };
 
 } // namespace ovpnc

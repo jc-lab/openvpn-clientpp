@@ -76,7 +76,6 @@ class TlsLayer : public Transport {
     cleanup_handler_ = handler;
   }
 
-  virtual void tlsInit() = 0;
   virtual void tlsReset() = 0;
   virtual bool tlsOperation(TlsOp op) = 0;
 
@@ -87,6 +86,12 @@ class TlsLayer : public Transport {
       connect_handler_(this);
     }
   }
+
+  virtual bool tls1Prf(
+      const uint8_t *seed, int seed_len,
+      const uint8_t *secret, int secret_len,
+      uint8_t *output, int output_len
+  ) const = 0;
 };
 
 } // namespace transport

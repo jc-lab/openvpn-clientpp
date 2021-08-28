@@ -15,9 +15,43 @@
 
 #include <ovpnc/client.h>
 
+#include <utility>
+
 #include "transport/reliable_layer.h"
 
 namespace ovpnc {
+
+class ClientTlsCreateLayerParams : public TlsCreateLayerParams {
+ private:
+  std::weak_ptr<Client> client_;
+  std::shared_ptr<Logger> logger_;
+  std::shared_ptr<transport::ReliableLayer> reliable_layer_;
+
+ public:
+  ClientTlsCreateLayerParams(
+      std::weak_ptr<Client> client,
+      std::shared_ptr<Logger> logger,
+      std::shared_ptr<transport::ReliableLayer> reliable_layer
+  ) :
+  client_(std::move(client)),
+  logger_(std::move(logger)),
+  reliable_layer_(std::move(reliable_layer))
+  {}
+
+  bool isServerMode() const override {
+    return false;
+  }
+
+  std::shared_ptr<Client> getClient() const override {
+    return client_.lock();
+  }
+  std::shared_ptr<Logger> getLogger() const override {
+    return logger_;
+  }
+  std::shared_ptr<transport::ReliableLayer> getParent() const override {
+    return reliable_layer_;
+  }
+};
 
 class ClientImpl : public Client {
  private:
@@ -41,8 +75,6 @@ class ClientImpl : public Client {
 
  private:
   bool connectImpl();
-  void doKeyShare();
-  std::string generateOptionString(bool remote) const;
 };
 
 } // namespace ovpnc
