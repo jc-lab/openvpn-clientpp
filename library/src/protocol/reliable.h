@@ -374,6 +374,8 @@ class DataV2Payload : public ReliablePayload {
   int deserializeFrom(const unsigned char *buffer, int length) override;
 };
 
+void serializeUint16(unsigned char *buffer, uint16_t value);
+uint16_t deserializeUint16(const unsigned char *buffer);
 void serializeUint32(unsigned char *buffer, uint32_t value);
 uint32_t deserializeUint32(const unsigned char *buffer);
 

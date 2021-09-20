@@ -9,6 +9,7 @@
 
 #include "default_provider.h"
 
+#include "openssl_random.h"
 #include "openssl_aes_gcm.h"
 #include "null_digest.h"
 
@@ -22,6 +23,10 @@ DefaultProvider::DefaultProvider() {
 
   auths_.emplace("none", std::make_shared<NullDigestAlgorithm>());
   auths_.emplace("[null-digest]", std::make_shared<NullDigestAlgorithm>());
+}
+
+std::shared_ptr<Random> DefaultProvider::createRandom() const {
+  return std::make_shared<OpenSSLRandom>();
 }
 
 std::shared_ptr<CipherAlgorithm> DefaultProvider::getCipherAlgorithm(const std::string &name) const {

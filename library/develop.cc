@@ -1,6 +1,8 @@
 #include <iostream>
 
-#include <uvw/loop.h>
+#include <jcu-unio/loop.h>
+
+#include <jcu-unio/net/openssl_provider.h>
 
 #include <ovpnc/client.h>
 #include <ovpnc/vpn_config.h>
@@ -11,21 +13,20 @@
 #include <openssl/ssl.h>
 
 int mainWrapped() {
-  auto logger = ovpnc::createDefaultLogger([](auto &line) -> void {
+  auto logger = jcu::unio::createDefaultLogger([](auto &line) -> void {
     std::cout << line << std::endl;
   });
 
-  auto loop = uvw::Loop::create();
-  auto client = ovpnc::Client::create(loop, logger);
-  ovpnc::VPNConfig config;
-  auto ossl_provider = ovpnc::OpenSslTlsProvider::create();
-  ossl_provider->setNewSslCtxHandler([](ovpnc::TlsCreateLayerParams *param) -> std::shared_ptr<SSL_CTX> {
-    std::shared_ptr<SSL_CTX> ssl_ctx(SSL_CTX_new(TLS_client_method()));
-    if (!ssl_ctx) {
-      return nullptr;
-    }
+  auto loop = jcu::unio::UnsafeLoop::fromDefault();
+  loop->init();
 
-    SSL_CTX_set_options(ssl_ctx.get(), SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
+  std::shared_ptr<jcu::unio::openssl::OpenSSLProvider> openssl_provider = jcu::unio::openssl::OpenSSLProvider::create();
+  auto openssl_context = openssl_provider->createOpenSSLContext(TLSv1_2_method()); // TLS_method()
+
+  {
+    SSL_CTX* ctx = openssl_context->getNativeCtx();
+
+    SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
 
     unsigned int ssl_ctx_mode =
         SSL_MODE_AUTO_RETRY |
@@ -34,23 +35,27 @@ int mainWrapped() {
             SSL_MODE_RELEASE_BUFFERS;
 
     SSL_CTX_set_mode(
-        ssl_ctx.get(),
+        ctx,
         ssl_ctx_mode
     );
 
-    SSL_CTX_use_PrivateKey_file(ssl_ctx.get(), "D:\\jcworkspace\\openvpn-cpp\\test\\client.key", SSL_FILETYPE_PEM);
-    SSL_CTX_use_certificate_file(ssl_ctx.get(), "D:\\jcworkspace\\openvpn-cpp\\test\\client.pem", SSL_FILETYPE_PEM);
+    SSL_CTX_use_PrivateKey_file(ctx, "D:\\jcworkspace\\openvpn-cpp\\test\\client.key", SSL_FILETYPE_PEM);
+    SSL_CTX_use_certificate_file(ctx, "D:\\jcworkspace\\openvpn-cpp\\test\\client.pem", SSL_FILETYPE_PEM);
+  }
 
-    return ssl_ctx;
-  });
-  config.tls_provider = ossl_provider;
+  auto client = ovpnc::Client::create(loop, logger);
+  ovpnc::VPNConfig config { };
+  config.ssl_context = openssl_context;
   config.protocol = ovpnc::kTransportTcp;
-  config.remote_host = "192.168.44.137"; // 44.167
+  config.remote_host = "192.168.44.136"; // 44.167
   config.remote_port = 61194;
 //  config.remote_port = 61195;
   client->setAutoReconnect(true);
   client->connect(config);
-  loop->run();
+
+  uv_run(loop->get(), UV_RUN_DEFAULT);
+  loop->uninit();
+
   return 0;
 }
 

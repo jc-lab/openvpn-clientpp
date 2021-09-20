@@ -27,6 +27,7 @@ class DefaultProvider : public Provider {
  public:
   DefaultProvider();
 
+  std::shared_ptr<Random> createRandom() const override;
   std::shared_ptr<CipherAlgorithm> getCipherAlgorithm(const std::string &name) const override;
   std::shared_ptr<AuthAlgorithm> getAuthAlgorithm(const std::string &name) const override;
   std::list<std::string> getCipherAlgorithmList() const override;

@@ -20,9 +20,17 @@ namespace crypto {
 class CipherAlgorithm;
 class AuthAlgorithm;
 
+class Random {
+ public:
+  virtual ~Random() = default;
+  virtual int nextBytes(void* buf, size_t size) = 0;
+};
+
 class Provider {
  public:
   virtual ~Provider() = default;
+
+  virtual std::shared_ptr<Random> createRandom() const = 0;
 
   virtual std::shared_ptr<CipherAlgorithm> getCipherAlgorithm(const std::string& name) const = 0;
   virtual std::shared_ptr<AuthAlgorithm> getAuthAlgorithm(const std::string& name) const = 0;

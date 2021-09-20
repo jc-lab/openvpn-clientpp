@@ -12,18 +12,21 @@
 
 #include <memory>
 
-#include <uvw/loop.h>
+#include <jcu-unio/loop.h>
+#include <jcu-unio/log.h>
+#include <jcu-unio/shared_object.h>
+#include <jcu-unio/net/stream_socket.h>
 
 #include "vpn_config.h"
 #include "log.h"
 
 namespace ovpnc {
 
-class Client {
+class Client : public jcu::unio::StreamSocket, public jcu::unio::SharedObject<Client> {
  public:
   virtual ~Client() = default;
 
-  static std::shared_ptr<Client> create(std::shared_ptr<::uvw::Loop> loop, std::shared_ptr<Logger> logger);
+  static std::shared_ptr<Client> create(std::shared_ptr<jcu::unio::Loop> loop, std::shared_ptr<jcu::unio::Logger> logger);
 
   virtual void setAutoReconnect(bool auto_reconnect) = 0;
   virtual bool connect(const VPNConfig &vpn_config) = 0;

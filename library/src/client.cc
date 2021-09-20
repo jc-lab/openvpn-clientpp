@@ -7,48 +7,47 @@
  *            of the Apache License 2.0.  See the LICENSE file for details.
  */
 
+#include <assert.h>
 
 #include <utility>
 #include <sstream>
 
 #include <openssl/rand.h>
 
-#include <uvw/timer.h>
-
 #include "client.h"
-#include "log.h"
-
 #include "crypto/default_provider.h"
-
-#include "transport/tcp.h"
-#include "transport/udp.h"
-
+#include "protocol/reliable.h"
 #include "protocol/control.h"
+
+using namespace ::jcu::unio;
 
 namespace ovpnc {
 
-std::shared_ptr<Client> ClientImpl::create(std::shared_ptr<::uvw::Loop> loop, std::shared_ptr<Logger> logger) {
+std::shared_ptr<Client> ClientImpl::create(std::shared_ptr<jcu::unio::Loop> loop,
+                                           std::shared_ptr<jcu::unio::Logger> logger) {
   std::shared_ptr<ClientImpl> instance(new ClientImpl(loop, logger));
   instance->self_ = instance;
   return instance;
 }
 
-std::shared_ptr<Client> Client::create(std::shared_ptr<::uvw::Loop> loop, std::shared_ptr<Logger> logger) {
+std::shared_ptr<Client> Client::create(std::shared_ptr<jcu::unio::Loop> loop,
+                                       std::shared_ptr<jcu::unio::Logger> logger) {
   return ClientImpl::create(std::move(loop), std::move(logger));
 }
 
-ClientImpl::ClientImpl(std::shared_ptr<::uvw::Loop> loop, std::shared_ptr<Logger> logger) :
+ClientImpl::ClientImpl(std::shared_ptr<jcu::unio::Loop> loop, std::shared_ptr<jcu::unio::Logger> logger) :
     loop_(loop),
     logger_(logger),
     auto_reconnect_(false) {
-  if (!logger_) {
-    logger_ = intl::createNullLogger();
-  }
-  logger_->logf(Logger::kLogDebug, "Client: Construct");
+  logger_->logf(jcu::unio::Logger::kLogDebug, "Client: Construct");
 }
 
 ClientImpl::~ClientImpl() {
-  logger_->logf(Logger::kLogDebug, "Client: Deconstruct");
+  logger_->logf(jcu::unio::Logger::kLogDebug, "Client: Deconstruct");
+}
+
+std::shared_ptr<Client> ClientImpl::shared() const {
+  return self_.lock();
 }
 
 void ClientImpl::setAutoReconnect(bool auto_reconnect) {
@@ -62,66 +61,100 @@ bool ClientImpl::connect(const VPNConfig &vpn_config) {
 
 bool ClientImpl::connectImpl() {
   std::shared_ptr<ClientImpl> self(self_.lock());
-  std::shared_ptr<transport::Transport> transport;
 
   if (!vpn_config_.crypto_provider) {
     vpn_config_.crypto_provider.reset(new crypto::DefaultProvider());
   }
 
-  if (vpn_config_.protocol == kTransportTcp) {
-    transport = transport::TransportTCP::create(loop_, logger_);
-  } else if (vpn_config_.protocol == kTransportUdp) {
-//    transport = TransportUDP::create(loop_, logger_);
-  } else {
-    return false;
-  }
-
-  reliable_layer_ = transport::ReliableLayer::create(
+  reliable_ = transport::ReliableLayer::create(
+      loop_,
       logger_,
-      transport,
-      [weak_client =
-      std::weak_ptr<ClientImpl>(self)](std::shared_ptr<transport::ReliableLayer> self) -> std::shared_ptr<transport::TlsLayer> {
-        std::shared_ptr<ClientImpl> client(weak_client.lock());
-        ClientTlsCreateLayerParams params(
-            client,
-            client->logger_,
-            std::move(self)
-        );
-        return client->vpn_config_.tls_provider->createLayer(&params);
-      },
-      vpn_config_.crypto_provider
+      vpn_config_
+  );
+  multiplexer_ = transport::Multiplexer::create(
+      loop_,
+      logger_,
+      vpn_config_,
+      self,
+      reliable_
   );
 
-  reliable_layer_->data(self_.lock());
-  reliable_layer_->onceConnectEvent([](transport::Transport *transport) -> void {
-    std::shared_ptr<ClientImpl> self(transport->template data<ClientImpl>());
-    self->logger_->logf(Logger::kLogDebug, "Client: ReliableLayer: handshaked");
-  });
-  reliable_layer_->onceCloseEvent([](transport::Transport *transport) -> void {
-    std::shared_ptr<ClientImpl> self(transport->template data<ClientImpl>());
-    self->logger_->logf(Logger::kLogDebug, "Client: CloseEvent");
-  });
-  reliable_layer_->onceCleanupEvent([](transport::Transport *transport) -> void {
-    std::shared_ptr<ClientImpl> self(transport->template data<ClientImpl>());
-    transport->data(nullptr);
-    self->logger_->logf(Logger::kLogDebug, "Client: CleanupEvent");
-  });
-  reliable_layer_->onceErrorEvent([](transport::Transport *transport, uvw::ErrorEvent &event) -> void {
-    std::shared_ptr<ClientImpl> self(transport->template data<ClientImpl>());
-    self->logger_->logf(Logger::kLogDebug, "Client: ErrorEvent: %s", event.what());
-    transport->close();
-  });
-  reliable_layer_->onDataEvent([](transport::Transport *transport, transport::Transport::DataEvent &event) -> void {
-    std::shared_ptr<ClientImpl> self(transport->template data<ClientImpl>());
-  });
+  int mtu = 1400;
+  multiplexer_->init(mtu);
 
-  ::uvw::Addr addr{
-      vpn_config_.remote_host,
-      vpn_config_.remote_port
-  };
-  transport->connect(addr);
+  multiplexer_->connect([](jcu::unio::SocketConnectEvent &event, jcu::unio::Resource &handle) -> void {
+    fprintf(stderr, "multiplexer->connect ok\n");
+  });
 
   return true;
+}
+
+void ClientImpl::read(
+    std::shared_ptr<Buffer> buffer,
+    CompletionManyCallback<SocketReadEvent> callback
+) {
+
+}
+
+void ClientImpl::cancelRead() {
+
+}
+
+void ClientImpl::write(
+    std::shared_ptr<Buffer> buffer,
+    CompletionOnceCallback<SocketWriteEvent> callback
+) {
+  size_t header_capacity = buffer->position();
+  uint8_t *base_ptr = (uint8_t *) buffer->data();
+  int header_size = 0;
+
+  /**
+   *  packet_id (4 or 8 bytes, if not disabled by --no-replay).
+   *      In SSL/TLS mode, 4 bytes are used because the implementation
+   *      can force a TLS renegotation before 2^32 packets are sent.
+   *      In pre-shared key mode, 8 bytes are used (sequence number
+   *      and time_t value) to allow long-term key usage without
+   *      packet_id collisions.
+   *  User plaintext (n bytes).
+   */
+
+  if (!vpn_config_.no_replay) {
+    if (vpn_config_.psk_mode) {
+      header_size = 8;
+      assert (header_capacity >= header_size);
+      base_ptr -= header_size;
+      protocol::reliable::serializeUint32(base_ptr, send_packet_id_);
+      base_ptr += 4;
+      protocol::reliable::serializeUint32(base_ptr, time(nullptr));
+    } else {
+      header_size = 4;
+      assert (header_capacity >= header_size);
+      base_ptr -= header_size;
+      protocol::reliable::serializeUint32(base_ptr, send_packet_id_);
+    }
+  }
+  buffer->position(buffer->position() - header_size);
+  multiplexer_->write(protocol::reliable::OpCode::P_DATA_V1, buffer, std::move(callback));
+}
+
+void ClientImpl::connect(
+    std::shared_ptr<ConnectParam> connect_param,
+    CompletionOnceCallback<SocketConnectEvent> callback
+) {
+  // DO NOT USE IT
+}
+
+void ClientImpl::disconnect(
+    CompletionOnceCallback<SocketDisconnectEvent> callback
+) {
+
+}
+bool ClientImpl::isConnected() const {
+  return false;
+}
+
+void ClientImpl::close() {
+
 }
 
 } // namespace ovpnc

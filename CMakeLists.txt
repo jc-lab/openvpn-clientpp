@@ -15,6 +15,8 @@ message("CMAKE_GENERATOR_PLATFORM : ${CMAKE_GENERATOR_PLATFORM}")
 message("CMAKE_GENERATOR_TOOLSET : ${CMAKE_GENERATOR_TOOLSET}")
 message("CMAKE_GENERATOR_INSTANCE : ${CMAKE_GENERATOR_INSTANCE}")
 
+add_subdirectory(jcu-unio)
+
 add_subdirectory(thirdparty)
 add_subdirectory(library)
-add_subdirectory(test)
+#add_subdirectory(test)

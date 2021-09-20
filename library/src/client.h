@@ -10,68 +10,71 @@
 #ifndef OVPNC_SRC_CLIENT_H_
 #define OVPNC_SRC_CLIENT_H_
 
-#include <uvw/stream.h>
-#include <uvw/tcp.h>
+#include <jcu-unio/net/tcp_socket.h>
+#include <jcu-unio/net/ssl_context.h>
+#include <jcu-unio/net/ssl_socket.h>
 
 #include <ovpnc/client.h>
 
 #include <utility>
 
+#include "transport/multiplexer.h"
 #include "transport/reliable_layer.h"
 
 namespace ovpnc {
-
-class ClientTlsCreateLayerParams : public TlsCreateLayerParams {
- private:
-  std::weak_ptr<Client> client_;
-  std::shared_ptr<Logger> logger_;
-  std::shared_ptr<transport::ReliableLayer> reliable_layer_;
-
- public:
-  ClientTlsCreateLayerParams(
-      std::weak_ptr<Client> client,
-      std::shared_ptr<Logger> logger,
-      std::shared_ptr<transport::ReliableLayer> reliable_layer
-  ) :
-  client_(std::move(client)),
-  logger_(std::move(logger)),
-  reliable_layer_(std::move(reliable_layer))
-  {}
-
-  bool isServerMode() const override {
-    return false;
-  }
-
-  std::shared_ptr<Client> getClient() const override {
-    return client_.lock();
-  }
-  std::shared_ptr<Logger> getLogger() const override {
-    return logger_;
-  }
-  std::shared_ptr<transport::ReliableLayer> getParent() const override {
-    return reliable_layer_;
-  }
-};
 
 class ClientImpl : public Client {
  private:
   std::weak_ptr<ClientImpl> self_;
 
-  std::shared_ptr<::uvw::Loop> loop_;
-  std::shared_ptr<Logger> logger_;
+  std::shared_ptr<jcu::unio::Loop> loop_;
+  std::shared_ptr<jcu::unio::Logger> logger_;
 
   VPNConfig vpn_config_;
   bool auto_reconnect_;
 
-  std::shared_ptr<transport::ReliableLayer> reliable_layer_;
+  std::shared_ptr<transport::ReliableLayer> reliable_;
+  std::shared_ptr<transport::Multiplexer> multiplexer_;
+
+  std::shared_ptr<jcu::unio::Socket> socket_;
+
+  uint64_t send_packet_id_;
 
  public:
-  ClientImpl(std::shared_ptr<::uvw::Loop> loop, std::shared_ptr<Logger> logger);
+  ClientImpl(std::shared_ptr<jcu::unio::Loop> loop, std::shared_ptr<jcu::unio::Logger> logger);
   ~ClientImpl() override;
-  static std::shared_ptr<Client> create(std::shared_ptr<::uvw::Loop> loop, std::shared_ptr<Logger> logger);
+  static std::shared_ptr<Client> create(std::shared_ptr<jcu::unio::Loop> loop,
+                                        std::shared_ptr<jcu::unio::Logger> logger);
 
   void setAutoReconnect(bool auto_reconnect) override;
   bool connect(const VPNConfig &vpn_config) override;
+
+  std::shared_ptr<Client> shared() const override;
+  void close() override;
+
+  void read(
+      std::shared_ptr<jcu::unio::Buffer> buffer,
+      jcu::unio::CompletionManyCallback<jcu::unio::SocketReadEvent> callback
+  ) override;
+  void cancelRead() override;
+  void write(
+      std::shared_ptr<jcu::unio::Buffer> buffer,
+      jcu::unio::CompletionOnceCallback<jcu::unio::SocketWriteEvent> callback
+  ) override;
+
+  /**
+   * DO NOT USE IT
+   * @param connect_param
+   * @param callback
+   */
+  void connect(
+      std::shared_ptr<jcu::unio::ConnectParam> connect_param,
+      jcu::unio::CompletionOnceCallback<jcu::unio::SocketConnectEvent> callback
+  ) override;
+  void disconnect(
+      jcu::unio::CompletionOnceCallback<jcu::unio::SocketDisconnectEvent> callback
+  ) override;
+  bool isConnected() const override;
 
  private:
   bool connectImpl();

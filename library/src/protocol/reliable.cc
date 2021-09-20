@@ -16,6 +16,18 @@ namespace ovpnc {
 namespace protocol {
 namespace reliable {
 
+void serializeUint16(unsigned char *buffer, uint16_t value) {
+  buffer[0] = (uint8_t) (value >> 8);
+  buffer[1] = (uint8_t) (value);
+}
+
+uint16_t deserializeUint16(const unsigned char *buffer) {
+  uint16_t value = 0;
+  value |= ((uint32_t) (*(buffer++))) << 8;
+  value |= ((uint32_t) (*(buffer++)));
+  return value;
+}
+
 void serializeUint32(unsigned char *buffer, uint32_t value) {
   buffer[0] = (uint8_t) (value >> 24);
   buffer[1] = (uint8_t) (value >> 16);
@@ -77,6 +89,7 @@ ControlV1Payload::ControlV1Payload(OpCode op_code) :
     hmac_{},
     ack_packet_id_array_len_(0),
     packet_id_(0) {
+  std::memset(remote_session_id_, 0, sizeof(remote_session_id_));
 }
 
 void ControlV1Payload::setRemoteSessionId(const unsigned char *remote_session_id) {

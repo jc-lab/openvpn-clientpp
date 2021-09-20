@@ -68,7 +68,7 @@ class OpenSslTlsLayer : public transport::TlsLayer {
   void tlsReset() override;
   bool tlsOperation(TlsOp op) override;
   void feedInboundCipherText(const unsigned char *raw_payload, int length) override;
-  std::shared_ptr<uvw::Loop> getLoop() override;
+  std::shared_ptr<Loop> getLoop() override;
   void connect(const sockaddr *addr) override;
   void connect(const uvw::Addr &addr) override;
   void read() override;

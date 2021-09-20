@@ -14,9 +14,9 @@
 #include <memory>
 #include <functional>
 
-#include "crypto/provider.h"
+#include <jcu-unio/net/ssl_context.h>
 
-#include "tls_provider.h"
+#include "crypto/provider.h"
 
 namespace ovpnc {
 
@@ -40,17 +40,19 @@ struct VPNConfig {
   TransportProtocol protocol;
   std::string remote_host;
   unsigned int remote_port;
-  const sockaddr *sockaddr;
 
   std::shared_ptr<crypto::Provider> crypto_provider;
 
   // key_provider
-  std::shared_ptr<TlsProvider> tls_provider;
+  std::shared_ptr<jcu::unio::SSLContext> ssl_context;
 
   /**
    * "server" or empty
    */
   std::string remote_cert_tls;
+
+  bool no_replay;
+  bool psk_mode;
 
   // lzo
   // compress

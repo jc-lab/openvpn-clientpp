@@ -13,8 +13,8 @@
 #include <memory>
 #include <vector>
 
-#include "../log.h"
-#include "transport.h"
+//#include "../log.h"
+//#include "transport.h"
 
 namespace ovpnc {
 namespace transport {

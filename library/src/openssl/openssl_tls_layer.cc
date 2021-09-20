@@ -197,7 +197,7 @@ void OpenSslTlsLayer::write(std::unique_ptr<char[]> data, unsigned int len) {
   }
 }
 
-std::shared_ptr<uvw::Loop> OpenSslTlsLayer::getLoop() {
+std::shared_ptr<Loop> OpenSslTlsLayer::getLoop() {
   return parent_.lock()->getLoop();
 }
 
