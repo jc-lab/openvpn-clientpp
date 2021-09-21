@@ -26,6 +26,11 @@ static int alignedSize(int size, int align) {
   return size;
 }
 
+static void dump(void* ptr, int size) {
+  const unsigned char* p = (const unsigned char*)ptr;
+  fprintf(stderr, "DUMP (%d) \n", size);
+}
+
 class Multiplexer::SSLSocketMiddleware : public jcu::unio::StreamSocket {
  public:
   std::shared_ptr<Multiplexer> multiplexer_;
@@ -63,11 +68,22 @@ class Multiplexer::SSLSocketMiddleware : public jcu::unio::StreamSocket {
       std::shared_ptr<jcu::unio::Buffer> buffer,
       jcu::unio::CompletionOnceCallback<jcu::unio::SocketWriteEvent> callback
   ) override {
+    auto lazy_ack_context = multiplexer_->lazy_ack_context_;
+
     size_t header_capacity = buffer->position();
     int socket_header_size = multiplexer_->getRequiredSocketHeader();
     uint32_t packet_id = multiplexer_->reliable_->nextPacketId();
     protocol::reliable::ControlV1Payload control(protocol::reliable::OpCode::P_CONTROL_V1);
     multiplexer_->reliable_->prepareControlV1Payload(control, packet_id);
+    if (lazy_ack_context && !lazy_ack_context->isSent() && !lazy_ack_context->getAckPacketIds().empty()) {
+      int count = lazy_ack_context->getAckPacketIds().size();
+      const uint32_t* acks = lazy_ack_context->getAckPacketIds().data();
+      control.setAckPacketIdArrayLength(count);
+      for (int i=0; i<count; i++) {
+        control.ackPacketIdArray()[i] = acks[i];
+      }
+      lazy_ack_context->setSent();
+    }
 
     // set control
     int header_size = control.getSerializedSize();
@@ -126,7 +142,8 @@ Multiplexer::Multiplexer(
     vpn_config_(vpn_config),
     reliable_(reliable),
     local_data_packet_id_(0),
-    peer_data_packet_id_(0)
+    peer_data_packet_id_(0),
+    lazy_ack_context_(nullptr)
 {
 }
 
@@ -251,7 +268,7 @@ void Multiplexer::handleReceivedPacket(uint16_t packet_size, ReceiveBuffer* buff
   const unsigned char* data = (const unsigned char*) buffer->data();
   protocol::reliable::OpCode opcode = protocol::reliable::OpCode::P_DATA_V1; // TODO: IT IS NOT IMPLEMENTED. V1 or V2?
   uint8_t key_id = 0;
-  size_t remaining_length = buffer->remaining();
+  size_t remaining_length = packet_size;
 
   if (isTLS()) {
     opcode = (protocol::reliable::OpCode)((*data >> 3) & 0x1f);
@@ -260,25 +277,28 @@ void Multiplexer::handleReceivedPacket(uint16_t packet_size, ReceiveBuffer* buff
     remaining_length--;
   }
 
-  fprintf(stderr, "handleReceivedPacket length = %d\n", packet_size);
-
   if ((opcode == protocol::reliable::OpCode::P_DATA_V1) || (opcode == protocol::reliable::OpCode::P_DATA_V2)) {
     // handle data
   } else {
     std::shared_ptr<Multiplexer> self(self_.lock());
     auto read_buffer = self->ssl_socket_middleware_->read_buffer_;
     if (read_buffer) read_buffer->clear();
-    reliable_->unwrap(opcode, key_id, data, remaining_length, self->ssl_socket_middleware_->read_buffer_, [self, read_buffer](ReliableLayer::UnwrapResult unwrap_result) -> void {
-      if (unwrap_result & ReliableLayer::kUnwrapStartSession) {
-        auto param = std::make_shared<jcu::unio::SockAddrConnectParam<sockaddr>>();
-        param->setHostname(self->vpn_config_.remote_host);
-        self->ssl_socket_->connect(param, [](auto& event, auto& handle) -> void {
-          fprintf(stderr, "TLS HANDSHAKED!!!!!!!!!!!!!!!\n");
-        });
-      }
-      if (unwrap_result & ReliableLayer::kUnwrapHasData) {
-        self->ssl_socket_middleware_->emitRead();
-      }
+    ReliableLayer::LazyAckContext ack_context;
+    lazy_ack_context_ = &ack_context;
+    ReliableLayer::UnwrapResult unwrap_result = reliable_->unwrap(ack_context, opcode, key_id, data, remaining_length, read_buffer);
+    if (unwrap_result & ReliableLayer::kUnwrapStartSession) {
+      auto param = std::make_shared<jcu::unio::SockAddrConnectParam<sockaddr>>();
+      param->setHostname(self->vpn_config_.remote_host);
+      self->ssl_socket_->connect(param, [](auto& event, auto& handle) -> void {
+        fprintf(stderr, "TLS HANDSHAKED!!!!!!!!!!!!!!!\n");
+      });
+    }
+    if (unwrap_result & ReliableLayer::kUnwrapHasData) {
+      self->ssl_socket_middleware_->emitRead();
+    }
+    lazy_ack_context_ = nullptr;
+    reliable_->sendLazyAcks(ack_context, [](jcu::unio::SocketWriteEvent& event) -> void {
+      fprintf(stderr, "sendLazyAcks done: err=%d\n", event.hasError());
     });
   }
 }

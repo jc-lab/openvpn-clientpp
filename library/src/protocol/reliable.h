@@ -189,8 +189,8 @@ class HMACInfoPayload : public ReliablePayload {
   int deserializeFrom(const unsigned char *buffer, int length) override;
 };
 
-class ControlV1Payload : public ReliablePayload {
- private:
+class SessionReliablePayload : public ReliablePayload {
+ protected:
   bool hmac_present_;
 
   uint8_t session_id_[8];
@@ -210,11 +210,13 @@ class ControlV1Payload : public ReliablePayload {
    */
   unsigned char remote_session_id_[8];
 
-  uint32_t packet_id_;
-
-  // ssl_data
  public:
-  ControlV1Payload(OpCode op_code);
+  SessionReliablePayload(OpCode op_code) :
+      ReliablePayload(op_code),
+      hmac_present_(false),
+      hmac_{},
+      ack_packet_id_array_len_(0)
+  {}
 
   void setSessionId(const unsigned char *session_id);
 
@@ -229,6 +231,10 @@ class ControlV1Payload : public ReliablePayload {
 
   uint8_t ackPacketIdArrayLength() const {
     return ack_packet_id_array_len_;
+  }
+
+  const std::vector<uint32_t> &ackPacketIdArray() const {
+    return ack_packet_id_array_;
   }
 
   std::vector<uint32_t> &ackPacketIdArray() {
@@ -261,6 +267,15 @@ class ControlV1Payload : public ReliablePayload {
   const unsigned char *remoteSessionId() const {
     return remote_session_id_;
   }
+};
+
+class ControlV1Payload : public SessionReliablePayload {
+ private:
+  uint32_t packet_id_;
+
+  // ssl_data
+ public:
+  ControlV1Payload(OpCode op_code);
 
   void setPacketId(uint32_t packet_id) {
     packet_id_ = packet_id;
@@ -275,74 +290,11 @@ class ControlV1Payload : public ReliablePayload {
   int deserializeFrom(const unsigned char *buffer, int length) override;
 };
 
-class AckV1Payload : public ReliablePayload {
+class AckV1Payload : public SessionReliablePayload {
  private:
-  bool hmac_present_;
 
-  uint8_t session_id_[8];
-  /**
-   * Optional (hmac_present)
-   */
-  HMACInfoPayload hmac_;
-  uint8_t ack_packet_id_array_len_;
-
-  /**
-   * size = packet_id_array_len
-   */
-  std::vector<uint32_t> ack_packet_id_array_;
-
-  /**
-   * Optional (remote_session)
-   */
-  unsigned char remote_session_id_[8];
  public:
   AckV1Payload(OpCode op_code);
-
-  void setSessionId(const unsigned char *session_id);
-
-  const unsigned char *sessionId() const {
-    return session_id_;
-  }
-
-  void setAckPacketIdArrayLength(uint8_t length) {
-    ack_packet_id_array_len_ = length;
-    ack_packet_id_array_.resize(length);
-  }
-
-  uint8_t ackPacketIdArrayLength() const {
-    return ack_packet_id_array_len_;
-  }
-
-  std::vector<uint32_t> &ackPacketIdArray() {
-    return ack_packet_id_array_;
-  }
-
-  void clearHmac() {
-    hmac_present_ = false;
-  }
-
-  void setHmac(const HMACInfoPayload &hmac) {
-    hmac_present_ = true;
-    hmac_ = hmac;
-  }
-
-  void setHmacPresent(bool hmac_present) {
-    hmac_present_ = hmac_present;
-  }
-
-  const HMACInfoPayload &hmac() const {
-    return hmac_;
-  }
-
-  bool hasRemoteSessionId() const {
-    return ack_packet_id_array_len_ > 0;
-  }
-
-  void setRemoteSessionId(const unsigned char *remote_session_id);
-
-  const unsigned char *remoteSessionId() const {
-    return remote_session_id_;
-  }
 
   int getSerializedSize() const override;
   unsigned char *serializeTo(unsigned char *buffer) const override;

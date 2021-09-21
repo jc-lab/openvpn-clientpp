@@ -83,17 +83,18 @@ int HMACInfoPayload::deserializeFrom(const unsigned char *buffer, int length) {
   return getSerializedSize();
 }
 
-ControlV1Payload::ControlV1Payload(OpCode op_code) :
-    ReliablePayload(op_code),
-    hmac_present_(false),
-    hmac_{},
-    ack_packet_id_array_len_(0),
-    packet_id_(0) {
-  std::memset(remote_session_id_, 0, sizeof(remote_session_id_));
+void SessionReliablePayload::setSessionId(const unsigned char *session_id) {
+  std::memcpy(session_id_, session_id, sizeof(session_id_));
 }
 
-void ControlV1Payload::setRemoteSessionId(const unsigned char *remote_session_id) {
+void SessionReliablePayload::setRemoteSessionId(const unsigned char *remote_session_id) {
   std::memcpy(remote_session_id_, remote_session_id, sizeof(remote_session_id_));
+}
+
+ControlV1Payload::ControlV1Payload(OpCode op_code) :
+    SessionReliablePayload(op_code),
+    packet_id_(0) {
+  std::memset(remote_session_id_, 0, sizeof(remote_session_id_));
 }
 
 int ControlV1Payload::getSerializedSize() const {
@@ -132,10 +133,6 @@ unsigned char *ControlV1Payload::serializeTo(unsigned char *buffer) const {
   return p;
 }
 
-void ControlV1Payload::setSessionId(const unsigned char *session_id) {
-  std::memcpy(session_id_, session_id, sizeof(session_id_));
-}
-
 int ControlV1Payload::deserializeFrom(const unsigned char *buffer, int length) {
   const unsigned char *p = buffer;
   const unsigned char *end = buffer + length;
@@ -166,10 +163,7 @@ int ControlV1Payload::deserializeFrom(const unsigned char *buffer, int length) {
 }
 
 AckV1Payload::AckV1Payload(OpCode op_code) :
-    ReliablePayload(op_code),
-    hmac_present_(false),
-    hmac_{},
-    ack_packet_id_array_len_(0) {
+    SessionReliablePayload(op_code) {
 }
 
 int AckV1Payload::getSerializedSize() const {
@@ -201,15 +195,29 @@ unsigned char *AckV1Payload::serializeTo(unsigned char *buffer) const {
   return p;
 }
 int AckV1Payload::deserializeFrom(const unsigned char *buffer, int length) {
-  return -1;
-}
-
-void AckV1Payload::setSessionId(const unsigned char *session_id) {
-  std::memcpy(session_id_, session_id, sizeof(session_id_));
-}
-
-void AckV1Payload::setRemoteSessionId(const unsigned char *remote_session_id) {
-  std::memcpy(remote_session_id_, remote_session_id, sizeof(remote_session_id_));
+  const unsigned char *p = buffer;
+  const unsigned char *end = buffer + length;
+  if ((end - p) < sizeof(session_id_)) return false;
+  memcpy(session_id_, p, sizeof(session_id_));
+  p += sizeof(session_id_);
+  if (hmac_present_) {
+    if ((end - p) < hmac_.getSerializedSize()) return false;
+    hmac_.deserializeFrom(p, hmac_.getSerializedSize());
+    p += hmac_.getSerializedSize();
+  }
+  if ((end - p) < 1) return false;
+  setAckPacketIdArrayLength(*(p++));
+  if ((end - p) < (4 * ack_packet_id_array_len_)) return false;
+  for (int i = 0; i < ack_packet_id_array_len_; i++) {
+    ack_packet_id_array_[i] = deserializeUint32(p);
+    p += 4;
+  }
+  if (hasRemoteSessionId()) {
+    if ((end - p) < sizeof(remote_session_id_)) return false;
+    std::memcpy(remote_session_id_, p, sizeof(remote_session_id_));
+    p += sizeof(remote_session_id_);
+  }
+  return (p - buffer);
 }
 
 DataV1Payload::DataV1Payload(OpCode op_code) :

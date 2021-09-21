@@ -130,6 +130,8 @@ class Multiplexer {
    */
   std::shared_ptr<jcu::unio::Buffer> data_plain_recv_buffer_;
 
+  ReliableLayer::LazyAckContext* lazy_ack_context_;
+
   Multiplexer(
       std::shared_ptr<jcu::unio::Loop> loop,
       std::shared_ptr<jcu::unio::Logger> logger,

@@ -164,6 +164,7 @@ void ReliableLayer::sendWithRetry(
 
 void ReliableLayer::prepareControlV1Payload(protocol::reliable::ControlV1Payload &payload, uint32_t packet_id) {
   payload.setSessionId(local_session_id_);
+  payload.setRemoteSessionId(peer_session_id_);
   payload.setPacketId(packet_id);
 }
 
@@ -180,18 +181,19 @@ void ReliableLayer::process() {
           protocol::reliable::ProtocolUtil::opcodeName(next_op_code));
 
   switch (next_op_code) {
-    case protocol::reliable::P_CONTROL_HARD_RESET_CLIENT_V2:sendControlHardResetClientV2();
+    case protocol::reliable::P_CONTROL_HARD_RESET_CLIENT_V2:
+      sendControlHardResetClientV2();
       break;
   }
 }
 
-void ReliableLayer::unwrap(
+ReliableLayer::UnwrapResult ReliableLayer::unwrap(
+    ReliableLayer::LazyAckContext &ack_context,
     protocol::reliable::OpCode opcode,
     uint8_t key_id,
     const unsigned char *data,
     size_t length,
-    std::shared_ptr<jcu::unio::Buffer> output_buffer,
-    UnwrapNextCallback next
+    std::shared_ptr<jcu::unio::Buffer> output_buffer
 ) {
   int results = UnwrapResult::kUnwrapOk;
 
@@ -208,51 +210,41 @@ void ReliableLayer::unwrap(
     case protocol::reliable::P_CONTROL_HARD_RESET_CLIENT_V2:
     case protocol::reliable::P_CONTROL_HARD_RESET_SERVER_V2:
     case protocol::reliable::P_CONTROL_HARD_RESET_CLIENT_V3:
-      handleControlPayload(opcode, key_id, data, length, output_buffer, next);
+      results = handleControlPayload(
+          ack_context,
+          opcode,
+          key_id,
+          data,
+          length,
+          output_buffer);
       break;
     case protocol::reliable::P_ACK_V1:
-      handleAckV1Payload(opcode, key_id, data, length, next);
+      results = handleAckV1Payload(ack_context, opcode, key_id, data, length);
       break;
   }
+
+  return (UnwrapResult) results;
 }
 
-
-void ReliableLayer::handleControlPayload(
+ReliableLayer::UnwrapResult ReliableLayer::handleControlPayload(
+    ReliableLayer::LazyAckContext &ack_context,
     protocol::reliable::OpCode op_code,
     uint8_t key_id,
     const unsigned char *data,
     size_t length,
-    std::shared_ptr<jcu::unio::Buffer> output_buffer,
-    UnwrapNextCallback next
+    std::shared_ptr<jcu::unio::Buffer> output_buffer
 ) {
   int results = 0;
 
-  protocol::reliable::ControlV1Payload control_payload {op_code};
+  protocol::reliable::ControlV1Payload control_payload{op_code};
   int proceed_length = control_payload.deserializeFrom(data, length);
   if (proceed_length < 0) {
     logger_->logf(jcu::unio::Logger::kLogError, "ReliableLayer: handleControlPayload: deserialize failed");
-    next(kUnwrapFailed);
-    return;
+    return kUnwrapFailed;
   }
 
-  // Check ACK
-  if (control_payload.hasRemoteSessionId()) {
-    if (std::memcmp(local_session_id_, control_payload.remoteSessionId(), sizeof(local_session_id_)) != 0) {
-      logger_->logf(jcu::unio::Logger::kLogError, "ReliableLayer: handleControlPayload: invalid session id");
-      next(kUnwrapFailed);
-      return;
-    }
-  }
-
-  if ((op_code == protocol::reliable::P_CONTROL_HARD_RESET_SERVER_V2) || (op_code == protocol::reliable::P_CONTROL_HARD_RESET_SERVER_V1)) {
-    if (!peer_inited_) {
-      std::memcpy(peer_session_id_, control_payload.sessionId(), sizeof(peer_session_id_));
-      peer_inited_ = true;
-    }
-  }
-
-  if (control_payload.ackPacketIdArrayLength() > 0) {
-    handleAcks(control_payload.ackPacketIdArray().data(), control_payload.ackPacketIdArrayLength());
+  if (!preprocessPayload(control_payload)) {
+    return kUnwrapFailed;
   }
 
   if (op_code == protocol::reliable::P_CONTROL_V1) {
@@ -261,39 +253,75 @@ void ReliableLayer::handleControlPayload(
     assert(data_size <= output_buffer->remaining());
     std::memcpy(output_buffer->data(), data + proceed_length, data_size);
     output_buffer->position(output_buffer->position() + data_size);
+    fprintf(stderr, "unwrap data_size: %d\n", data_size);
     output_buffer->flip();
     results |= kUnwrapHasData;
   }
 
-  //TODO: ACK따로 보내지 않고, Response에 ack 추가
-  //      lazy send? 다 끝내고 process() 하면 안보냈으면 보내고 아님 sendMessage에서 추가
-  //      혹은 send context ? 구현
+  ack_context.addPacketId(control_payload.packetId());
 
-  uint32_t ack_packet_ids[1] = {
-      control_payload.packetId()
-  };
+  if ((control_payload.getOpCode() == protocol::reliable::P_CONTROL_HARD_RESET_SERVER_V2)
+      || (control_payload.getOpCode() == protocol::reliable::P_CONTROL_HARD_RESET_SERVER_V1)) {
+    results |= kUnwrapStartSession;
+  }
 
-  sendAckV1(1, ack_packet_ids, [op_code, results, next = std::move(next)](auto &event, auto &handle) mutable -> void {
-    if ((op_code == protocol::reliable::P_CONTROL_HARD_RESET_SERVER_V2) || (op_code == protocol::reliable::P_CONTROL_HARD_RESET_SERVER_V1)) {
-      next((UnwrapResult)(results | kUnwrapStartSession));
-    } else {
-      next((UnwrapResult)(results | kUnwrapOk));
-    }
-  });
+  return (UnwrapResult) results;
 }
 
-void ReliableLayer::handleAckV1Payload(
+ReliableLayer::UnwrapResult ReliableLayer::handleAckV1Payload(
+    ReliableLayer::LazyAckContext &ack_context,
     protocol::reliable::OpCode op_code,
     uint8_t key_id,
     const unsigned char *data,
-    size_t length,
-    UnwrapNextCallback next
+    size_t length
 ) {
+  int results = 0;
 
+  protocol::reliable::AckV1Payload ack_payload{op_code};
+  int proceed_length = ack_payload.deserializeFrom(data, length);
+  if (proceed_length < 0) {
+    logger_->logf(jcu::unio::Logger::kLogError, "ReliableLayer: handleAckV1Payload: deserialize failed");
+    return kUnwrapFailed;
+  }
+
+  if (!preprocessPayload(ack_payload)) {
+    return kUnwrapFailed;
+  }
+
+  return kUnwrapOk;
 }
 
-void ReliableLayer::handleAcks(uint32_t *packet_id_array, int length) {
-  for (int i=0; i<length; i++) {
+bool ReliableLayer::preprocessPayload(const protocol::reliable::SessionReliablePayload &payload) {
+  //TODO: key_id 처리?
+
+  // Check ACK
+  if (payload.hasRemoteSessionId()) {
+    if (std::memcmp(local_session_id_, payload.remoteSessionId(), sizeof(local_session_id_)) != 0) {
+      logger_->logf(jcu::unio::Logger::kLogError, "ReliableLayer: preprocessPayload: invalid session id");
+      return false;
+    }
+  }
+
+  if ((payload.getOpCode() == protocol::reliable::P_CONTROL_HARD_RESET_SERVER_V2)
+      || (payload.getOpCode() == protocol::reliable::P_CONTROL_HARD_RESET_SERVER_V1)) {
+    if (!peer_inited_) {
+      std::memcpy(peer_session_id_, payload.sessionId(), sizeof(peer_session_id_));
+      peer_inited_ = true;
+    }
+  }
+
+  if (payload.ackPacketIdArrayLength() > 0) {
+    handleReceivedAcks(payload);
+  }
+
+  return true;
+}
+
+void ReliableLayer::handleReceivedAcks(const protocol::reliable::SessionReliablePayload &payload) {
+  int length = payload.ackPacketIdArrayLength();
+  const uint32_t *packet_id_array = payload.ackPacketIdArray().data();
+
+  for (int i = 0; i < length; i++) {
     logger_->logf(jcu::unio::Logger::kLogTrace, "ACK Received: packet_id=%u", packet_id_array[i]);
   }
 
@@ -331,9 +359,11 @@ void ReliableLayer::sendControlHardResetClientV2() {
   });
 }
 
-void ReliableLayer::sendAckV1(int packet_id_count,
-                              uint32_t *packet_ids,
-                              jcu::unio::CompletionOnceCallback<jcu::unio::SocketWriteEvent> callback) {
+void ReliableLayer::sendAckV1(
+    int packet_id_count,
+    const uint32_t *packet_ids,
+    jcu::unio::CompletionOnceCallback<jcu::unio::SocketWriteEvent> callback
+) {
   auto buffer = multiplexer_->createMessageBuffer();
 
   protocol::reliable::AckV1Payload ack_payload{protocol::reliable::P_ACK_V1};
@@ -350,6 +380,19 @@ void ReliableLayer::sendAckV1(int packet_id_count,
   buffer->flip();
 
   multiplexer_->write(ack_payload.getOpCode(), buffer, std::move(callback));
+}
+
+void ReliableLayer::sendLazyAcks(ReliableLayer::LazyAckContext &ack_context, CompletionOnceCallback<jcu::unio::SocketWriteEvent> callback) {
+  if (ack_context.isSent() || ack_context.getAckPacketIds().empty()) {
+    jcu::unio::SocketWriteEvent event {};
+    callback(event);
+    return ;
+  }
+  ack_context.setSent();
+  fprintf(stderr, "sendLazyAcks count=%d\n", ack_context.getAckPacketIds().size());
+  sendAckV1(ack_context.getAckPacketIds().size(), ack_context.getAckPacketIds().data(), [callback = std::move(callback)](auto& event, auto& handle) -> void {
+    callback(event);
+  });
 }
 
 //static void dump(const void* ptr, int length) {
@@ -1013,6 +1056,7 @@ void ReliableLayer::sendAckV1(int packet_id_count,
 //  }
 //  crypto_context->inbound.setImplicitIV(inbound_key->hmac, MAX_HMAC_KEY_LENGTH);
 //}
+
 
 } // namespace transport
 } // namespace ovpnc

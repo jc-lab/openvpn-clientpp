@@ -31,6 +31,9 @@ class Multiplexer;
 
 class ReliableLayer {
  public:
+  template<class T>
+  using CompletionOnceCallback = std::function<void(T& event)>;
+
   enum Mode {
     kClientMode,
     kServerMode,
@@ -40,6 +43,33 @@ class ReliableLayer {
     kUnwrapFailed = 0x80000000,
     kUnwrapStartSession = 0x00000001,
     kUnwrapHasData = 0x00000002
+  };
+  class LazyAckContext {
+   protected:
+    bool sent_;
+    std::vector<uint32_t> ack_packet_ids_;
+
+   public:
+    LazyAckContext() {
+      sent_ = false;
+    }
+
+    void setSent() {
+      sent_ = true;
+    }
+
+    bool isSent() const {
+      return sent_;
+    }
+
+    const std::vector<uint32_t>& getAckPacketIds() const {
+      return ack_packet_ids_;
+    }
+
+    void addPacketId(uint32_t packet_id) {
+      fprintf(stderr, "** addPacketId : %u\n", packet_id);
+      ack_packet_ids_.emplace_back(packet_id);
+    }
   };
 
   typedef std::function<void(UnwrapResult result)> UnwrapNextCallback;
@@ -91,7 +121,8 @@ class ReliableLayer {
   std::shared_ptr<jcu::unio::Buffer> send_message_buffer_;
   std::list<LastSendPacket> send_packets_;
 
-  void handleAcks(uint32_t *packet_id_array, int length);
+  void handleReceivedAcks(const protocol::reliable::SessionReliablePayload& payload);
+  bool preprocessPayload(const protocol::reliable::SessionReliablePayload& payload);
 
  public:
   static std::shared_ptr<ReliableLayer> create(
@@ -123,29 +154,30 @@ class ReliableLayer {
   uint32_t nextPacketId();
 
   void process();
-  void unwrap(
+  UnwrapResult unwrap(
+      ReliableLayer::LazyAckContext& ack_context,
       protocol::reliable::OpCode opcode,
       uint8_t key_id,
       const unsigned char *data,
       size_t length,
-      std::shared_ptr<jcu::unio::Buffer> output_buffer,
-      UnwrapNextCallback next
+      std::shared_ptr<jcu::unio::Buffer> output_buffer
   );
+  void sendLazyAcks(ReliableLayer::LazyAckContext& ack_context, CompletionOnceCallback<jcu::unio::SocketWriteEvent> callback);
 
-  void handleControlPayload(
+  UnwrapResult handleControlPayload(
+      ReliableLayer::LazyAckContext& ack_context,
       protocol::reliable::OpCode op_code,
       uint8_t key_id,
       const unsigned char *data,
       size_t length,
-      std::shared_ptr<jcu::unio::Buffer> output_buffer,
-      UnwrapNextCallback next
+      std::shared_ptr<jcu::unio::Buffer> output_buffer
   );
-  void handleAckV1Payload(
+  UnwrapResult handleAckV1Payload(
+      ReliableLayer::LazyAckContext& ack_context,
       protocol::reliable::OpCode op_code,
       uint8_t key_id,
       const unsigned char *data,
-      size_t length,
-      UnwrapNextCallback next
+      size_t length
   );
 
   void sendControlHardResetClientV2();
@@ -154,7 +186,7 @@ class ReliableLayer {
   void prepareAckV1Payload(protocol::reliable::AckV1Payload &payload);
   void sendAckV1(
       int packet_id_count,
-      uint32_t *packet_ids,
+      const uint32_t *packet_ids,
       jcu::unio::CompletionOnceCallback<jcu::unio::SocketWriteEvent> callback);
 
   void sendWithRetry(
