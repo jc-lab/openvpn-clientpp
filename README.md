@@ -1,6 +1,6 @@
-# openvpn-clientpp
+# ovpnc
 
-OpenVPN Client CPP
+OpenVPN CPP
 
 * OpenVPN Client implementation via C++ language.
 
@@ -8,29 +8,17 @@ OpenVPN Client CPP
 
 # Requirements
 
-* C++17 (for uvw)
+* C++14
 
 # Features
 
 * [x] TCP Client Mode
 
-* [x] UDP Client Mode
+* [x] TLS
 
-* [ ] P2P Mode
+# TODO
 
-* [ ] TLS
-
-* [ ] ???
-
-* [ ] ???
-
-* [ ] ???
-
-* [ ] ???
-
-* [ ] ???
-
-* [ ] ???
+See [docs/todo.md](docs/todo.md)
 
 # License
 
