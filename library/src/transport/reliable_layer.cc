@@ -13,6 +13,8 @@
 #include "buffer_with_header.h"
 #include "multiplexer.h"
 
+#include "rw_buffer.h"
+
 # define EVP_MAX_MD_SIZE                 64/* longest known is SHA512 */
 # define EVP_MAX_KEY_LENGTH              64
 # define EVP_MAX_IV_LENGTH               16
@@ -47,6 +49,7 @@ static void dump(const void* ptr, int size) {
 ReliableLayer::SessionContext::SessionContext() {
   std::memset(&session_id, 0, sizeof(session_id));
   packet_id = 0;
+  data_packet_id = 0;
 }
 
 class ReliableLayer::SSLSocketMiddleware : public jcu::unio::StreamSocket {
@@ -157,11 +160,16 @@ ReliableLayer::ReliableLayer(
     vpn_config_(vpn_config),
     mode_(kClientMode),
     peer_inited_(false),
-    lazy_ack_context_(nullptr) {
+    lazy_ack_context_(nullptr),
+    data_opcode_(protocol::reliable::P_DATA_V1) {
   random_ = vpn_config_.crypto_provider->createRandom();
   random_->nextBytes(key_state_.local.session_id, sizeof(key_state_.local.session_id));
   key_state_.key_id = -1;
   keyStateInit();
+}
+
+bool ReliableLayer::isHandshaked() const {
+  return key_state_.state == kKeyStateEstablished;
 }
 
 ReliableLayer::SessionContext &ReliableLayer::getClientSession() {
@@ -569,7 +577,7 @@ ReliableLayer::UnwrapResult ReliableLayer::unwrapDataPayload(
     jcu::unio::Buffer* output
 ) {
   auto& inbound_crypto = key_state_.inbound_crypto;
-  auto& inbound_session = key_state_.peer;
+
   const unsigned char *p = data;
   const unsigned char *end = data + length;
 
@@ -589,6 +597,7 @@ ReliableLayer::UnwrapResult ReliableLayer::unwrapDataPayload(
 
   if (opcode == protocol::reliable::P_DATA_V2)
   {
+    data_opcode_ = protocol::reliable::P_DATA_V2;
     ad_start = p - 1;
     p += 3;
   } else if (opcode == protocol::reliable::P_DATA_V1) {
@@ -602,6 +611,7 @@ ReliableLayer::UnwrapResult ReliableLayer::unwrapDataPayload(
 //    length -= auth_size;
 //  }
 
+  uint32_t packet_id = protocol::reliable::deserializeUint32(p);
   /* Combine IV from explicit part from packet and implicit part from context */
   {
     uint8_t iv[EVP_MAX_IV_LENGTH] = { 0 };
@@ -612,21 +622,18 @@ ReliableLayer::UnwrapResult ReliableLayer::unwrapDataPayload(
     memcpy(iv + packet_iv_len, inbound_crypto.implicit_iv.data(), inbound_crypto.implicit_iv.size());
     inbound_crypto.cipher->reset(iv);
   }
-
-  uint32_t packet_id = protocol::reliable::deserializeUint32(data);
   p += 4;
 
   tag_ptr = p;
-  auto tag_size = inbound_crypto.cipher->getTagSize();
-  p += tag_size;
-
+  auto tag_size = 0;
   if (inbound_crypto.cipher->isAEADMode()) {
     /* feed in tag and the authenticated data */
-    const int ad_size = p - ad_start - tag_size;
-
+    const int ad_size = p - ad_start;
+    tag_size = inbound_crypto.cipher->getTagSize();
     rc = inbound_crypto.cipher->updateAD(ad_start, ad_size);
     fprintf(stderr, "INBOUND>cipher->updateAD rc=%d\n", rc);
   }
+  p += tag_size;
 
   int block_bytes = inbound_crypto.cipher->getBlockSize();
 
@@ -652,6 +659,108 @@ ReliableLayer::UnwrapResult ReliableLayer::unwrapDataPayload(
   output->flip();
 
   return kUnwrapData;
+}
+
+bool ReliableLayer::wrapData(
+    jcu::unio::Buffer *input,
+    jcu::unio::Buffer *output,
+    uint8_t *popcode
+) {
+  protocol::reliable::OpCode data_op_code = data_opcode_;
+
+  auto& outbound_crypto = key_state_.outbound_crypto;
+
+  int rc = 0;
+
+  output->clear();
+  RWBuffer writer(output);
+
+  unsigned char* ad_start = nullptr;
+
+  if (data_op_code == protocol::reliable::P_DATA_V2) {
+    if (output->position() < 1) {
+      return false;
+    }
+    ad_start = ((unsigned char*)output->data()) - 1;
+    ad_start[0] = ((uint8_t)data_op_code) << 3 | key_state_.key_id; // P_DATA_V2
+    writer.writeUint8(0);
+    writer.writeUint8(0);
+    if (!writer.writeUint8(0)) {
+      return false;
+    }
+//    peer = htonl(((P_DATA_V2 << P_OPCODE_SHIFT) | ks->key_id) << 24
+//                     | (multi->peer_id & 0xFFFFFF));
+//    ASSERT(buf_write_prepend(buf, &peer, 4));
+  } else {
+    ad_start = ((unsigned char*)output->data());
+  }
+
+  uint32_t packet_id = ++key_state_.local.data_packet_id;
+
+  const unsigned char* packet_iv_ptr = writer.data();
+  if (!writer.writeUint32(packet_id)) {
+    return false;
+  }
+
+  /* Combine IV from explicit part from packet and implicit part from context */
+  {
+    uint8_t iv[EVP_MAX_IV_LENGTH] = { 0 };
+    const int iv_len = outbound_crypto.cipher->getIVSize();
+    const size_t packet_iv_len = iv_len - outbound_crypto.implicit_iv.size();
+
+    // packet_id
+    memcpy(iv, packet_iv_ptr, packet_iv_len);
+    memcpy(iv + packet_iv_len, outbound_crypto.implicit_iv.data(), outbound_crypto.implicit_iv.size());
+
+    fprintf(stderr, "ENCRYPT IV: ");
+    dump(iv, iv_len);
+    outbound_crypto.cipher->reset(iv);
+  }
+
+  if (outbound_crypto.cipher->isAEADMode()) {
+    const unsigned char* ad_end = writer.data();
+    /* feed in tag and the authenticated data */
+    int ad_size = ad_end - ad_start;
+    rc = outbound_crypto.cipher->updateAD(ad_start, ad_size);
+    fprintf(stderr, "ENCRYPT AD: ");
+    dump(ad_start, ad_size);
+    fprintf(stderr, "OUTBOUND>cipher->updateAD rc=%d\n", rc);
+  }
+
+  unsigned char* tag_ptr = writer.data();
+  if (outbound_crypto.cipher->isAEADMode()) {
+    auto tag_size = outbound_crypto.cipher->getTagSize();
+    writer.skip(tag_size);
+  }
+
+  int block_bytes = outbound_crypto.cipher->getBlockSize();
+
+  rc = outbound_crypto.cipher->updateData((const unsigned char*) input->data(), input->remaining(), writer.data(), writer.remaining());
+  fprintf(stderr, "ENCRYPT DATA: ");
+  dump(writer.data(), rc);
+  if (rc < 0) {
+    fprintf(stderr, "OUTBOUND>cipher->updateData rc=%d\n", rc);
+    return false;
+  }
+  writer.skip(rc);
+
+  rc = outbound_crypto.cipher->final(writer.data(), writer.remaining());
+  if (rc < 0) {
+    fprintf(stderr, "OUTBOUND>cipher->updateData rc=%d\n", rc);
+    return false;
+  }
+  writer.skip(rc);
+
+  if (outbound_crypto.cipher->isAEADMode()) {
+    outbound_crypto.cipher->getAEADTag(tag_ptr);
+    fprintf(stderr, "ENCRYPT MAC: ");
+    dump(tag_ptr, outbound_crypto.cipher->getTagSize());
+  }
+
+  writer.flip();
+
+  *popcode = data_op_code;
+  return true;
 }
 
 //

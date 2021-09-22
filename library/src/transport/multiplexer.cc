@@ -10,6 +10,7 @@
 #include <assert.h>
 
 #include <jcu-unio/net/tcp_socket.h>
+#include <memory>
 
 #include "multiplexer.h"
 
@@ -26,17 +27,17 @@ static int alignedSize(int size, int align) {
   return size;
 }
 
-static void dump(void* ptr, int size) {
-  const unsigned char* p = (const unsigned char*)ptr;
+static void dump(void *ptr, int size) {
+  const unsigned char *p = (const unsigned char *) ptr;
   fprintf(stderr, "DUMP (%d) \n", size);
-  for (int i=0; i<size; i++) fprintf(stderr, "%02x ", *(p++));
+  for (int i = 0; i < size; i++) fprintf(stderr, "%02x ", *(p++));
   fprintf(stderr, "\n");
 }
 
 std::shared_ptr<Multiplexer> Multiplexer::create(
     std::shared_ptr<jcu::unio::Loop> loop,
     std::shared_ptr<jcu::unio::Logger> logger,
-    const VPNConfig& vpn_config,
+    const VPNConfig &vpn_config,
     std::shared_ptr<jcu::unio::Resource> io_parent,
     std::shared_ptr<ReliableLayer> reliable
 ) {
@@ -52,7 +53,7 @@ std::shared_ptr<Multiplexer> Multiplexer::shared() const {
 Multiplexer::Multiplexer(
     std::shared_ptr<jcu::unio::Loop> loop,
     std::shared_ptr<jcu::unio::Logger> logger,
-    const VPNConfig& vpn_config,
+    const VPNConfig &vpn_config,
     std::shared_ptr<jcu::unio::Resource> io_parent,
     std::shared_ptr<ReliableLayer> reliable
 ) :
@@ -62,8 +63,7 @@ Multiplexer::Multiplexer(
     vpn_config_(vpn_config),
     reliable_(reliable),
     local_data_packet_id_(0),
-    peer_data_packet_id_(0)
-{
+    peer_data_packet_id_(0) {
 }
 
 bool Multiplexer::isTLS() const {
@@ -96,9 +96,6 @@ void Multiplexer::init(int mtu) {
   send_message_buffer_ = std::make_shared<BufferWithHeader>(getRequiredMessageBufferOffset(), 65536);
   recv_message_buffer_ = std::make_shared<ReceiveBuffer>(65536);
   reliable_->init(self_.lock(), send_message_buffer_);
-
-  // 8 byte packet_id [as offset=8] + plain text
-  data_plain_recv_buffer_ = jcu::unio::createFixedSizeBuffer(8 + alignedSize(mtu_, 32));
 }
 
 void Multiplexer::connect(jcu::unio::CompletionOnceCallback<jcu::unio::SocketConnectEvent> callback) {
@@ -110,31 +107,40 @@ void Multiplexer::connect(jcu::unio::CompletionOnceCallback<jcu::unio::SocketCon
   if (vpn_config_.protocol == kTransportTcp) {
     parent_socket_ = jcu::unio::TCPSocket::create(loop_, logger_);
   } else {
-    return ;
+    return;
   }
 
   auto connect_param = std::make_shared<jcu::unio::SockAddrConnectParam<sockaddr_in>>();
   rc = uv_ip4_addr(vpn_config_.remote_host.c_str(), vpn_config_.remote_port, connect_param->getSockAddr());
   if (rc) {
-    jcu::unio::SocketConnectEvent event { jcu::unio::UvErrorEvent {rc, 0} };
+    jcu::unio::SocketConnectEvent event{jcu::unio::UvErrorEvent{rc, 0}};
     callback(event, *io_parent);
   }
-  parent_socket_->connect(connect_param, [self, callback = std::move(callback)](jcu::unio::SocketConnectEvent& event, jcu::unio::Resource& handle) mutable -> void {
-    if (event.hasError()) {
-      callback(event, handle /* TODO: Hummm... */);
-      return ;
-    }
-    self->parent_socket_->read(self->recv_message_buffer_, [self](jcu::unio::SocketReadEvent& event, jcu::unio::Resource& handle) -> void {
-      if (event.hasError()) {
-        // TODO: ERROR HANDLING
-        self->logger_->logf(jcu::unio::Logger::kLogError, "SOME ERROR... %d / %s", event.error().code(), event.error().what());
-        return ;
-      }
-      self->onRead(dynamic_cast<ReceiveBuffer*>(event.buffer()));
-    });
+  parent_socket_->connect(
+      connect_param,
+      [self, callback = std::move(callback)](jcu::unio::SocketConnectEvent &event,
+                                             jcu::unio::Resource &handle) mutable -> void {
+        if (event.hasError()) {
+          callback(event, handle /* TODO: Hummm... */);
+          return;
+        }
+        self->parent_socket_->read(
+            self->recv_message_buffer_,
+            [self](jcu::unio::SocketReadEvent &event,
+                   jcu::unio::Resource &handle) -> void {
+              if (event.hasError()) {
+                // TODO: ERROR HANDLING
+                self->logger_->logf(jcu::unio::Logger::kLogError,
+                                    "SOME ERROR... %d / %s",
+                                    event.error().code(),
+                                    event.error().what());
+                return;
+              }
+              self->onRead(dynamic_cast<ReceiveBuffer *>(event.buffer()));
+            });
 
-    self->reliable_->doNextOperationAndSendLazyAcks(nullptr);
-  });
+        self->reliable_->doNextOperationAndSendLazyAcks(nullptr);
+      });
 }
 
 //region Socket Send/Receive
@@ -149,12 +155,12 @@ void Multiplexer::connect(jcu::unio::CompletionOnceCallback<jcu::unio::SocketCon
  *      key_id (low 3 bits)
  */
 
-void Multiplexer::onRead(ReceiveBuffer* buffer) {
+void Multiplexer::onRead(ReceiveBuffer *buffer) {
   ReliableLayer::LazyAckContext ack_context;
 
   if (isTCP()) {
     while (buffer->remaining() >= 2) {
-      const unsigned char* data = (const unsigned char*) buffer->data();
+      const unsigned char *data = (const unsigned char *) buffer->data();
       uint16_t packet_size = protocol::reliable::deserializeUint16(data);
       if (buffer->remaining() >= (2 + packet_size)) {
         buffer->position(buffer->position() + 2);
@@ -177,23 +183,30 @@ void Multiplexer::onRead(ReceiveBuffer* buffer) {
   reliable_->doNextOperationAndSendLazyAcks(&ack_context);
 }
 
-void Multiplexer::handleReceivedPacket(ReliableLayer::LazyAckContext& ack_context, uint16_t packet_size, ReceiveBuffer* buffer) {
-  const unsigned char* data = (const unsigned char*) buffer->data();
-  protocol::reliable::OpCode opcode = protocol::reliable::OpCode::P_DATA_V1; // TODO: IT IS NOT IMPLEMENTED. V1 or V2?
+void Multiplexer::handleReceivedPacket(ReliableLayer::LazyAckContext &ack_context,
+                                       uint16_t packet_size,
+                                       ReceiveBuffer *buffer) {
+  const unsigned char *data = (const unsigned char *) buffer->data();
+  protocol::reliable::OpCode opcode = protocol::reliable::OpCode::P_NONE;
   uint8_t key_id = 0;
   size_t remaining_length = packet_size;
 
   if (isTLS()) {
-    opcode = (protocol::reliable::OpCode)((*data >> 3) & 0x1f);
+    opcode = (protocol::reliable::OpCode) ((*data >> 3) & 0x1f);
     key_id = *data & 0x07;
     data++;
     remaining_length--;
+  } else {
+    opcode = protocol::reliable::OpCode::P_DATA_V1; // TODO: IT IS NOT IMPLEMENTED. V1 or V2?
   }
 
-  ReliableLayer::UnwrapResult result = reliable_->unwrap(ack_context, opcode, key_id, data, remaining_length, data_plain_recv_buffer_.get());
+  ReliableLayer::UnwrapResult result =
+      reliable_->unwrap(ack_context, opcode, key_id, data, remaining_length, read_buffer_.get());
   if (result & ReliableLayer::kUnwrapData) {
-    fprintf(stderr, "UNWRAPPED DATA: %d: ", data_plain_recv_buffer_->remaining());
-    dump(data_plain_recv_buffer_->data(), data_plain_recv_buffer_->remaining());
+    if (read_callback_) {
+      jcu::unio::SocketReadEvent event{read_buffer_.get()};
+      read_callback_(event, *this);
+    }
   }
 }
 
@@ -204,7 +217,7 @@ void Multiplexer::write(
 ) {
   size_t header_capacity = buffer->position();
   int socket_header_size = getRequiredSocketHeader();
-  uint8_t *base_ptr = (uint8_t*) buffer->data();
+  uint8_t *base_ptr = (uint8_t *) buffer->data();
   uint8_t key_id = reliable_->getKeyId();
 
   assert (header_capacity >= socket_header_size);
@@ -230,6 +243,44 @@ void Multiplexer::write(
 
 bool Multiplexer::isConnected() const {
   return parent_socket_->isConnected();
+}
+bool Multiplexer::isHandshaked() const {
+  std::shared_ptr<ReliableLayer> reliable(reliable_);
+  if (!reliable) return false;
+  return reliable->isHandshaked();
+}
+
+void Multiplexer::read(
+    std::shared_ptr<jcu::unio::Buffer> buffer,
+    jcu::unio::CompletionManyCallback<jcu::unio::SocketReadEvent> callback
+) {
+  read_buffer_ = buffer;
+  read_callback_ = std::move(callback);
+}
+
+void Multiplexer::cancelRead() {
+  read_buffer_.reset();
+  read_callback_ = nullptr;
+}
+
+void Multiplexer::write(
+    std::shared_ptr<jcu::unio::Buffer> buffer,
+    jcu::unio::CompletionOnceCallback<jcu::unio::SocketWriteEvent> callback
+) {
+  //TODO: NOT CONNECTED YET
+
+  //TODO: use memory pool
+  auto socket_buffer = std::make_shared<BufferWithHeader>(getRequiredSocketHeader(), 65536);
+  uint8_t op_code = 0;
+  socket_buffer->clear();
+  if (!reliable_->wrapData(buffer.get(), socket_buffer.get(), &op_code)) {
+    //TODO: Something error
+  }
+  write(op_code, std::move(socket_buffer), std::move(callback));
+}
+
+void Multiplexer::close() {
+  cancelRead();
 }
 
 //endregion

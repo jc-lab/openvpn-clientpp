@@ -110,7 +110,7 @@ class ReliableLayer {
     std::unique_ptr<crypto::AuthContext> hmac;
     std::vector<unsigned char> implicit_iv;
 
-    void setImplicitIV(const unsigned char* key, int length) {
+    void setImplicitIV(const unsigned char *key, int length) {
       implicit_iv.clear();
       if (cipher->isAEADMode()) {
         size_t impl_iv_len = cipher->getIVSize() - sizeof(packet_id_t);
@@ -139,8 +139,7 @@ class ReliableLayer {
    * Container for bidirectional cipher and HMAC %key material.
    * @ingroup control_processor
    */
-  struct key2
-  {
+  struct key2 {
     /**
      * The number of \c key objects stored
      * in the \c key2.keys array.
@@ -160,7 +159,15 @@ class ReliableLayer {
      * local: decryptor
      * peer : encryptor
      */
+
+    /**
+     * last received packet_id
+     */
     packet_id_t packet_id;
+    /**
+     * last sent packet_id
+     */
+    packet_id_t data_packet_id;
     //endregion
 
     protocol::control::KeyMethod2 key_method;
@@ -206,6 +213,7 @@ class ReliableLayer {
   bool peer_inited_;
 
   KeyState key_state_;
+  protocol::reliable::OpCode data_opcode_;
 
   std::shared_ptr<jcu::unio::Buffer> send_message_buffer_;
   std::list<LastSendPacket> send_packets_;
@@ -225,6 +233,8 @@ class ReliableLayer {
       std::shared_ptr<jcu::unio::Logger> logger,
       VPNConfig vpn_config
   );
+
+  bool isHandshaked() const;
 
   SessionContext &getClientSession();
   SessionContext &getServerSession();
@@ -253,8 +263,14 @@ class ReliableLayer {
       uint8_t key_id,
       const unsigned char *data,
       size_t length,
-      jcu::unio::Buffer* output
+      jcu::unio::Buffer *output
   );
+  bool wrapData(
+      jcu::unio::Buffer *input,
+      jcu::unio::Buffer *output,
+      uint8_t *popcode
+  );
+
   void doNextOperationAndSendLazyAcks(
       ReliableLayer::LazyAckContext *ack_context
   );
@@ -274,7 +290,7 @@ class ReliableLayer {
       size_t length
   );
 
-  void handleTlsPayload(jcu::unio::Buffer* buffer);
+  void handleTlsPayload(jcu::unio::Buffer *buffer);
 
   void sendControlHardResetClientV2();
 
@@ -306,7 +322,7 @@ class ReliableLayer {
   );
   bool generateKeyExpansion(key2 *pkey2);
   bool generateKeyExpansionOvpnPRF(key2 *pkey2);
-  void initKeyContexts(KeyState& key_state, key2* pkey2, const char* key_name);
+  void initKeyContexts(KeyState &key_state, key2 *pkey2, const char *key_name);
 
   void sendKeyState();
 
@@ -315,7 +331,7 @@ class ReliableLayer {
       uint8_t key_id,
       const unsigned char *data,
       size_t length,
-      jcu::unio::Buffer* output
+      jcu::unio::Buffer *output
   );
 };
 

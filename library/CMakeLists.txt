@@ -16,6 +16,8 @@ add_library(openvpn_clientpp
         ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/buffer_with_header.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/receive_buffer.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/receive_buffer.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/rw_buffer.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/rw_buffer.cc
 
         ${CMAKE_CURRENT_SOURCE_DIR}/src/protocol/base.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/protocol/reliable.h

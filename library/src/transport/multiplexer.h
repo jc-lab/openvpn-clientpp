@@ -21,6 +21,7 @@
 #include <jcu-unio/net/stream_socket.h>
 
 #include <ovpnc/vpn_config.h>
+#include <memory>
 #include "reliable_layer.h"
 
 #include "receive_buffer.h"
@@ -86,12 +87,12 @@ namespace transport {
  *   - User plaintext (n bytes).
  *
  */
-class Multiplexer /* : public jcu::unio::Socket, public jcu::unio::SharedObject<Multiplexer> */ {
+class Multiplexer : public jcu::unio::Socket, public jcu::unio::SharedObject<Multiplexer> {
  public:
   static std::shared_ptr<Multiplexer> create(
       std::shared_ptr<jcu::unio::Loop> loop,
       std::shared_ptr<jcu::unio::Logger> logger,
-      const VPNConfig& vpn_config,
+      const VPNConfig &vpn_config,
       std::shared_ptr<jcu::unio::Resource> io_parent,
       std::shared_ptr<ReliableLayer> reliable
   );
@@ -124,23 +125,24 @@ class Multiplexer /* : public jcu::unio::Socket, public jcu::unio::SharedObject<
   std::shared_ptr<ReceiveBuffer> recv_message_buffer_;
 
   /**
-   * 8 byte packet_id [as offset=8] + plain text
+   * Plain IP Protocol Buffer
    */
-  std::shared_ptr<jcu::unio::Buffer> data_plain_recv_buffer_;
+  std::shared_ptr<jcu::unio::Buffer> read_buffer_;
+  jcu::unio::CompletionManyCallback<jcu::unio::SocketReadEvent> read_callback_;
 
   Multiplexer(
       std::shared_ptr<jcu::unio::Loop> loop,
       std::shared_ptr<jcu::unio::Logger> logger,
-      const VPNConfig& vpn_config,
+      const VPNConfig &vpn_config,
       std::shared_ptr<jcu::unio::Resource> io_parent,
       std::shared_ptr<ReliableLayer> reliable
   );
 
-  void onRead(ReceiveBuffer* buffer);
-  void handleReceivedPacket(ReliableLayer::LazyAckContext& ack_context, uint16_t packet_id, ReceiveBuffer* buffer);
+  void onRead(ReceiveBuffer *buffer);
+  void handleReceivedPacket(ReliableLayer::LazyAckContext &ack_context, uint16_t packet_id, ReceiveBuffer *buffer);
 
  public:
-  std::shared_ptr<Multiplexer> shared() const; // override;
+  std::shared_ptr<Multiplexer> shared() const override;
 
   /**
    * create buffers
@@ -242,8 +244,19 @@ class Multiplexer /* : public jcu::unio::Socket, public jcu::unio::SharedObject<
   );
 
   bool isConnected() const;
-};
+  bool isHandshaked() const;
 
+  void read(
+      std::shared_ptr<jcu::unio::Buffer> buffer,
+      jcu::unio::CompletionManyCallback<jcu::unio::SocketReadEvent> callback
+  ) override;
+  void cancelRead() override;
+  void write(
+      std::shared_ptr<jcu::unio::Buffer> buffer,
+      jcu::unio::CompletionOnceCallback<jcu::unio::SocketWriteEvent> callback
+  ) override;
+  void close() override;
+};
 
 } // namespace transport
 } // namespace ovpnc

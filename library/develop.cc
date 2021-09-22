@@ -1,6 +1,7 @@
 #include <iostream>
 
 #include <jcu-unio/loop.h>
+#include <jcu-unio/timer.h>
 
 #include <jcu-unio/net/openssl_provider.h>
 
@@ -11,6 +12,14 @@
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
+
+static void dump(const void* ptr, size_t len) {
+  const unsigned char* p = (const unsigned char*) ptr;
+  for(int i = 0; i < len; i++) {
+    fprintf(stderr, "%02x ", *(p++));
+  }
+  fprintf(stderr, "\n");
+}
 
 int mainWrapped() {
   auto logger = jcu::unio::createDefaultLogger([](auto &line) -> void {
@@ -52,6 +61,30 @@ int mainWrapped() {
 //  config.remote_port = 61195;
   client->setAutoReconnect(true);
   client->connect(config);
+
+  client->read(jcu::unio::createFixedSizeBuffer(65536), [](auto& event, auto& resource) -> void {
+    auto buffer = event.buffer();
+    fprintf(stderr, "CLIENT READ [%d]: ", buffer->remaining());
+    dump(buffer->data(), buffer->remaining());
+  });
+
+  auto timer = jcu::unio::Timer::create(loop, logger);
+  timer->on<jcu::unio::TimerEvent>([client](auto& event, auto& handle) -> void {
+    unsigned char data[] = {0x45, 0x00, 0x00, 0x54, 0xcc, 0x5a, 0x40, 0x00, 0x40, 0x01,
+                            0x54, 0x31,
+                            0x0a, 0x08, 0x00, 0x06,
+                            8,8,8,8,
+                            0x08, 0x00, 0x40, 0x16, 0x00, 0x02, 0x97, 0xfc, 0xf0, 0x22, 0x4b, 0x61, 0x00, 0x00, 0x00, 0x00, 0x17, 0x94, 0x0e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37};
+    auto temp = jcu::unio::createFixedSizeBuffer(65536);
+    temp->clear();
+    std::memcpy(temp->data(), data, sizeof(data));
+    temp->position(temp->position() + sizeof(data));
+    temp->flip();
+    client->write(temp, [](auto& event, auto& resource) -> void {
+
+    });
+  });
+  timer->start(std::chrono::milliseconds { 3000 }, std::chrono::milliseconds { 1500 });
 
   uv_run(loop->get(), UV_RUN_DEFAULT);
   loop->uninit();

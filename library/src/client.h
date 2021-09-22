@@ -75,6 +75,7 @@ class ClientImpl : public Client {
       jcu::unio::CompletionOnceCallback<jcu::unio::SocketDisconnectEvent> callback
   ) override;
   bool isConnected() const override;
+  bool isHandshaked() const override;
 
  private:
   bool connectImpl();
