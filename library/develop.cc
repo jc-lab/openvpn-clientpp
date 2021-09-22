@@ -21,7 +21,7 @@ int mainWrapped() {
   loop->init();
 
   std::shared_ptr<jcu::unio::openssl::OpenSSLProvider> openssl_provider = jcu::unio::openssl::OpenSSLProvider::create();
-  auto openssl_context = openssl_provider->createOpenSSLContext(TLSv1_2_method()); // TLS_method()
+  auto openssl_context = openssl_provider->createOpenSSLContext(TLS_method()); // TLS_method()
 
   {
     SSL_CTX* ctx = openssl_context->getNativeCtx();

@@ -157,7 +157,7 @@ std::string DataChannelOptions::serialize() const {
   ss << "V4";
   ss << ",dev-type " << dev_type;
   ss << ",link-mtu " << link_mtu;
-  ss << ",tun-mtu ";
+  ss << ",tun-mtu " << tun_mtu;
   ss << ",proto " << proto;
   // keydir 0 : server
   // keydir 1 : client

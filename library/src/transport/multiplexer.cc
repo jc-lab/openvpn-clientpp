@@ -29,93 +29,9 @@ static int alignedSize(int size, int align) {
 static void dump(void* ptr, int size) {
   const unsigned char* p = (const unsigned char*)ptr;
   fprintf(stderr, "DUMP (%d) \n", size);
+  for (int i=0; i<size; i++) fprintf(stderr, "%02x ", *(p++));
+  fprintf(stderr, "\n");
 }
-
-class Multiplexer::SSLSocketMiddleware : public jcu::unio::StreamSocket {
- public:
-  std::shared_ptr<Multiplexer> multiplexer_;
-
-  std::shared_ptr<jcu::unio::Buffer> read_buffer_;
-  jcu::unio::CompletionManyCallback<jcu::unio::SocketReadEvent> read_callback_;
-
-  SSLSocketMiddleware(std::shared_ptr<Multiplexer> multiplexer) :
-      multiplexer_(multiplexer)
-  {
-  }
-
-  void emitRead() {
-    if (read_callback_) {
-      jcu::unio::SocketReadEvent event { read_buffer_.get() };
-      read_callback_(event, *this);
-    }
-  }
-
-  void read(
-      std::shared_ptr<jcu::unio::Buffer> buffer,
-      jcu::unio::CompletionManyCallback<jcu::unio::SocketReadEvent> callback
-  ) override {
-    read_buffer_ = buffer;
-    read_callback_ = std::move(callback);
-  }
-
-  void cancelRead() override {
-    read_buffer_.reset();
-    read_callback_ = nullptr;
-    multiplexer_->parent_socket_->cancelRead();
-  }
-
-  void write(
-      std::shared_ptr<jcu::unio::Buffer> buffer,
-      jcu::unio::CompletionOnceCallback<jcu::unio::SocketWriteEvent> callback
-  ) override {
-    auto lazy_ack_context = multiplexer_->lazy_ack_context_;
-
-    size_t header_capacity = buffer->position();
-    int socket_header_size = multiplexer_->getRequiredSocketHeader();
-    uint32_t packet_id = multiplexer_->reliable_->nextPacketId();
-    protocol::reliable::ControlV1Payload control(protocol::reliable::OpCode::P_CONTROL_V1);
-    multiplexer_->reliable_->prepareControlV1Payload(control, packet_id);
-    if (lazy_ack_context && !lazy_ack_context->isSent() && !lazy_ack_context->getAckPacketIds().empty()) {
-      int count = lazy_ack_context->getAckPacketIds().size();
-      const uint32_t* acks = lazy_ack_context->getAckPacketIds().data();
-      control.setAckPacketIdArrayLength(count);
-      for (int i=0; i<count; i++) {
-        control.ackPacketIdArray()[i] = acks[i];
-      }
-      lazy_ack_context->setSent();
-    }
-
-    // set control
-    int header_size = control.getSerializedSize();
-    assert (header_capacity >= (socket_header_size + header_size));
-    unsigned char* base_ptr = ((unsigned char*)buffer->data()) - header_size;
-    control.serializeTo(base_ptr);
-    buffer->position(header_capacity - header_size);
-
-    multiplexer_->reliable_->sendWithRetry(control.getOpCode(), packet_id, buffer, std::move(callback));
-  }
-
-  void connect(
-      std::shared_ptr<jcu::unio::ConnectParam> connect_param,
-      jcu::unio::CompletionOnceCallback<jcu::unio::SocketConnectEvent> callback
-  ) override {
-    jcu::unio::SocketConnectEvent event {};
-    callback(event, *this);
-  }
-
-  void disconnect(
-      jcu::unio::CompletionOnceCallback<jcu::unio::SocketDisconnectEvent> callback
-  ) override {
-    multiplexer_->parent_socket_->disconnect(std::move(callback));
-  }
-
-  bool isConnected() const override {
-    return multiplexer_->parent_socket_->isConnected();
-  }
-
-  void close() override {
-  }
-};
 
 std::shared_ptr<Multiplexer> Multiplexer::create(
     std::shared_ptr<jcu::unio::Loop> loop,
@@ -127,6 +43,10 @@ std::shared_ptr<Multiplexer> Multiplexer::create(
   std::shared_ptr<Multiplexer> instance(new Multiplexer(loop, logger, vpn_config, io_parent, reliable));
   instance->self_ = instance;
   return instance;
+}
+
+std::shared_ptr<Multiplexer> Multiplexer::shared() const {
+  return self_.lock();
 }
 
 Multiplexer::Multiplexer(
@@ -142,8 +62,7 @@ Multiplexer::Multiplexer(
     vpn_config_(vpn_config),
     reliable_(reliable),
     local_data_packet_id_(0),
-    peer_data_packet_id_(0),
-    lazy_ack_context_(nullptr)
+    peer_data_packet_id_(0)
 {
 }
 
@@ -187,18 +106,11 @@ void Multiplexer::connect(jcu::unio::CompletionOnceCallback<jcu::unio::SocketCon
 
   std::shared_ptr<jcu::unio::Resource> io_parent(io_parent_.lock());
   std::shared_ptr<Multiplexer> self(self_.lock());
-  ssl_socket_middleware_ = std::make_shared<SSLSocketMiddleware>(self);
 
   if (vpn_config_.protocol == kTransportTcp) {
     parent_socket_ = jcu::unio::TCPSocket::create(loop_, logger_);
   } else {
     return ;
-  }
-
-  if (!vpn_config_.psk_mode) {
-    ssl_socket_ = jcu::unio::SSLSocket::create(loop_, logger_, vpn_config_.ssl_context);
-    ssl_socket_->setParent(ssl_socket_middleware_);
-    ssl_socket_->setSocketOutboundBuffer(send_message_buffer_);
   }
 
   auto connect_param = std::make_shared<jcu::unio::SockAddrConnectParam<sockaddr_in>>();
@@ -220,12 +132,9 @@ void Multiplexer::connect(jcu::unio::CompletionOnceCallback<jcu::unio::SocketCon
       }
       self->onRead(dynamic_cast<ReceiveBuffer*>(event.buffer()));
     });
-    self->reliableProcess();
-  });
-}
 
-void Multiplexer::reliableProcess() {
-  reliable_->process();
+    self->reliable_->doNextOperationAndSendLazyAcks(nullptr);
+  });
 }
 
 //region Socket Send/Receive
@@ -241,13 +150,15 @@ void Multiplexer::reliableProcess() {
  */
 
 void Multiplexer::onRead(ReceiveBuffer* buffer) {
+  ReliableLayer::LazyAckContext ack_context;
+
   if (isTCP()) {
     while (buffer->remaining() >= 2) {
       const unsigned char* data = (const unsigned char*) buffer->data();
       uint16_t packet_size = protocol::reliable::deserializeUint16(data);
       if (buffer->remaining() >= (2 + packet_size)) {
         buffer->position(buffer->position() + 2);
-        handleReceivedPacket(packet_size, buffer);
+        handleReceivedPacket(ack_context, packet_size, buffer);
         buffer->position(buffer->position() + packet_size);
       } else {
         break;
@@ -260,11 +171,13 @@ void Multiplexer::onRead(ReceiveBuffer* buffer) {
     }
   } else {
     // UDP is not fragmented
-    handleReceivedPacket(buffer->remaining(), buffer);
+    handleReceivedPacket(ack_context, buffer->remaining(), buffer);
   }
+
+  reliable_->doNextOperationAndSendLazyAcks(&ack_context);
 }
 
-void Multiplexer::handleReceivedPacket(uint16_t packet_size, ReceiveBuffer* buffer) {
+void Multiplexer::handleReceivedPacket(ReliableLayer::LazyAckContext& ack_context, uint16_t packet_size, ReceiveBuffer* buffer) {
   const unsigned char* data = (const unsigned char*) buffer->data();
   protocol::reliable::OpCode opcode = protocol::reliable::OpCode::P_DATA_V1; // TODO: IT IS NOT IMPLEMENTED. V1 or V2?
   uint8_t key_id = 0;
@@ -277,29 +190,10 @@ void Multiplexer::handleReceivedPacket(uint16_t packet_size, ReceiveBuffer* buff
     remaining_length--;
   }
 
-  if ((opcode == protocol::reliable::OpCode::P_DATA_V1) || (opcode == protocol::reliable::OpCode::P_DATA_V2)) {
-    // handle data
-  } else {
-    std::shared_ptr<Multiplexer> self(self_.lock());
-    auto read_buffer = self->ssl_socket_middleware_->read_buffer_;
-    if (read_buffer) read_buffer->clear();
-    ReliableLayer::LazyAckContext ack_context;
-    lazy_ack_context_ = &ack_context;
-    ReliableLayer::UnwrapResult unwrap_result = reliable_->unwrap(ack_context, opcode, key_id, data, remaining_length, read_buffer);
-    if (unwrap_result & ReliableLayer::kUnwrapStartSession) {
-      auto param = std::make_shared<jcu::unio::SockAddrConnectParam<sockaddr>>();
-      param->setHostname(self->vpn_config_.remote_host);
-      self->ssl_socket_->connect(param, [](auto& event, auto& handle) -> void {
-        fprintf(stderr, "TLS HANDSHAKED!!!!!!!!!!!!!!!\n");
-      });
-    }
-    if (unwrap_result & ReliableLayer::kUnwrapHasData) {
-      self->ssl_socket_middleware_->emitRead();
-    }
-    lazy_ack_context_ = nullptr;
-    reliable_->sendLazyAcks(ack_context, [](jcu::unio::SocketWriteEvent& event) -> void {
-      fprintf(stderr, "sendLazyAcks done: err=%d\n", event.hasError());
-    });
+  ReliableLayer::UnwrapResult result = reliable_->unwrap(ack_context, opcode, key_id, data, remaining_length, data_plain_recv_buffer_.get());
+  if (result & ReliableLayer::kUnwrapData) {
+    fprintf(stderr, "UNWRAPPED DATA: %d: ", data_plain_recv_buffer_->remaining());
+    dump(data_plain_recv_buffer_->data(), data_plain_recv_buffer_->remaining());
   }
 }
 
@@ -332,6 +226,10 @@ void Multiplexer::write(
 
   fprintf(stderr, "Multiplexer: write: %d\n", buffer->remaining());
   parent_socket_->write(buffer, std::move(callback));
+}
+
+bool Multiplexer::isConnected() const {
+  return parent_socket_->isConnected();
 }
 
 //endregion

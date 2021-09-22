@@ -15,9 +15,10 @@
 #include <jcu-unio/loop.h>
 #include <jcu-unio/log.h>
 #include <jcu-unio/buffer.h>
+#include <jcu-unio/handle.h>
+#include <jcu-unio/shared_object.h>
 
 #include <jcu-unio/net/stream_socket.h>
-#include <jcu-unio/net/ssl_socket.h>
 
 #include <ovpnc/vpn_config.h>
 #include "reliable_layer.h"
@@ -85,9 +86,8 @@ namespace transport {
  *   - User plaintext (n bytes).
  *
  */
-class Multiplexer {
+class Multiplexer /* : public jcu::unio::Socket, public jcu::unio::SharedObject<Multiplexer> */ {
  public:
-  class SSLSocketMiddleware;
   static std::shared_ptr<Multiplexer> create(
       std::shared_ptr<jcu::unio::Loop> loop,
       std::shared_ptr<jcu::unio::Logger> logger,
@@ -112,8 +112,6 @@ class Multiplexer {
   int mtu_;
 
   std::shared_ptr<jcu::unio::StreamSocket> parent_socket_;
-  std::shared_ptr<jcu::unio::SSLSocket> ssl_socket_;
-  std::shared_ptr<SSLSocketMiddleware> ssl_socket_middleware_;
 
   /**
    * TCP/UDP packet format [as offset=3] + P_DATA message content
@@ -130,8 +128,6 @@ class Multiplexer {
    */
   std::shared_ptr<jcu::unio::Buffer> data_plain_recv_buffer_;
 
-  ReliableLayer::LazyAckContext* lazy_ack_context_;
-
   Multiplexer(
       std::shared_ptr<jcu::unio::Loop> loop,
       std::shared_ptr<jcu::unio::Logger> logger,
@@ -141,11 +137,11 @@ class Multiplexer {
   );
 
   void onRead(ReceiveBuffer* buffer);
-  void handleReceivedPacket(uint16_t packet_id, ReceiveBuffer* buffer);
-
-  void reliableProcess();
+  void handleReceivedPacket(ReliableLayer::LazyAckContext& ack_context, uint16_t packet_id, ReceiveBuffer* buffer);
 
  public:
+  std::shared_ptr<Multiplexer> shared() const; // override;
+
   /**
    * create buffers
    *
@@ -244,6 +240,8 @@ class Multiplexer {
       std::shared_ptr<jcu::unio::Buffer> buffer,
       jcu::unio::CompletionOnceCallback<jcu::unio::SocketWriteEvent> callback
   );
+
+  bool isConnected() const;
 };
 
 

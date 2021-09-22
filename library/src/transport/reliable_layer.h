@@ -16,11 +16,21 @@
 #include <jcu-unio/buffer.h>
 #include <jcu-unio/timer.h>
 #include <jcu-unio/net/socket.h>
+#include <jcu-unio/net/ssl_socket.h>
 
 #include <ovpnc/vpn_config.h>
 #include <ovpnc/crypto/provider.h>
+#include <ovpnc/crypto/cipher.h>
+#include <ovpnc/crypto/auth.h>
 
 #include "../protocol/reliable.h"
+#include "../protocol/control.h"
+
+#define    OPENVPN_AEAD_TAG_LENGTH   16
+#define    OPENVPN_MAX_CIPHER_BLOCK_SIZE   32
+#define    OPENVPN_MAX_HMAC_SIZE   64
+#define    MAX_CIPHER_KEY_LENGTH   64
+#define    MAX_HMAC_KEY_LENGTH   64
 
 namespace ovpnc {
 namespace transport {
@@ -32,18 +42,19 @@ class Multiplexer;
 class ReliableLayer {
  public:
   template<class T>
-  using CompletionOnceCallback = std::function<void(T& event)>;
+  using CompletionOnceCallback = std::function<void(T &event)>;
 
   enum Mode {
     kClientMode,
     kServerMode,
   };
+
   enum UnwrapResult {
-    kUnwrapOk = 0,
-    kUnwrapFailed = 0x80000000,
-    kUnwrapStartSession = 0x00000001,
-    kUnwrapHasData = 0x00000002
+    kUnwrapOk,
+    kUnwrapFailed,
+    kUnwrapData
   };
+
   class LazyAckContext {
    protected:
     bool sent_;
@@ -62,17 +73,14 @@ class ReliableLayer {
       return sent_;
     }
 
-    const std::vector<uint32_t>& getAckPacketIds() const {
+    const std::vector<uint32_t> &getAckPacketIds() const {
       return ack_packet_ids_;
     }
 
     void addPacketId(uint32_t packet_id) {
-      fprintf(stderr, "** addPacketId : %u\n", packet_id);
       ack_packet_ids_.emplace_back(packet_id);
     }
   };
-
-  typedef std::function<void(UnwrapResult result)> UnwrapNextCallback;
 
   struct LastSendPacket {
     bool active;
@@ -97,7 +105,89 @@ class ReliableLayer {
     }
   };
 
+  struct CryptoContext {
+    std::unique_ptr<crypto::CipherContext> cipher;
+    std::unique_ptr<crypto::AuthContext> hmac;
+    std::vector<unsigned char> implicit_iv;
+
+    void setImplicitIV(const unsigned char* key, int length) {
+      implicit_iv.clear();
+      if (cipher->isAEADMode()) {
+        size_t impl_iv_len = cipher->getIVSize() - sizeof(packet_id_t);
+        implicit_iv.insert(implicit_iv.end(), key, key + impl_iv_len);
+      }
+    }
+  };
+
+  /**
+   * Container for unidirectional cipher and HMAC %key material.
+   * @ingroup control_processor
+   */
+  struct key {
+    uint8_t cipher[MAX_CIPHER_KEY_LENGTH];
+    /**< %Key material for cipher operations. */
+    uint8_t hmac[MAX_HMAC_KEY_LENGTH];
+    /**< %Key material for HMAC operations. */
+  };
+
+  enum Key2Index {
+    kClientKey = 0,
+    kServerKey = 1,
+  };
+
+  /**
+   * Container for bidirectional cipher and HMAC %key material.
+   * @ingroup control_processor
+   */
+  struct key2
+  {
+    /**
+     * The number of \c key objects stored
+     * in the \c key2.keys array.
+     */
+    int n;
+    /**
+     * Two unidirectional sets of %key material
+     */
+    struct key keys[2];
+  };
+
+  struct SessionContext {
+    uint8_t session_id[8];
+
+    //region crypto_options
+    /**
+     * local: decryptor
+     * peer : encryptor
+     */
+    packet_id_t packet_id;
+    //endregion
+
+    protocol::control::KeyMethod2 key_method;
+    protocol::control::DataChannelOptions data_channel_options;
+    SessionContext();
+  };
+
+  enum KeyStatus {
+    kKeyStateInitial,
+    kKeyStatePreStart,
+    kKeyStateStart,
+    kKeyStateSent,
+    kKeyStateEstablished,
+  };
+
+  struct KeyState {
+    KeyStatus state;
+    int key_id;
+    CryptoContext inbound_crypto;
+    CryptoContext outbound_crypto;
+    SessionContext local;
+    SessionContext peer;
+  };
+
  private:
+  class SSLSocketMiddleware;
+
   std::weak_ptr<ReliableLayer> self_;
 
   std::shared_ptr<jcu::unio::Loop> loop_;
@@ -107,22 +197,21 @@ class ReliableLayer {
   std::shared_ptr<crypto::Random> random_;
   std::shared_ptr<Multiplexer> multiplexer_;
 
+  std::shared_ptr<jcu::unio::SSLSocket> ssl_socket_;
+  std::shared_ptr<SSLSocketMiddleware> ssl_socket_middleware_;
+  std::shared_ptr<jcu::unio::Buffer> ssl_buffer_;
+  ReliableLayer::LazyAckContext *lazy_ack_context_;
+
   Mode mode_;
-  uint8_t local_session_id_[8];
-  uint8_t peer_session_id_[8];
   bool peer_inited_;
 
-  int8_t key_id_;
-  packet_id_t local_packet_id_;
-  packet_id_t peer_packet_id_;
-
-  protocol::reliable::OpCode next_op_;
+  KeyState key_state_;
 
   std::shared_ptr<jcu::unio::Buffer> send_message_buffer_;
   std::list<LastSendPacket> send_packets_;
 
-  void handleReceivedAcks(const protocol::reliable::SessionReliablePayload& payload);
-  bool preprocessPayload(const protocol::reliable::SessionReliablePayload& payload);
+  void handleReceivedAcks(const protocol::reliable::SessionReliablePayload &payload);
+  bool preprocessPayload(const protocol::reliable::SessionReliablePayload &payload);
 
  public:
   static std::shared_ptr<ReliableLayer> create(
@@ -136,6 +225,11 @@ class ReliableLayer {
       std::shared_ptr<jcu::unio::Logger> logger,
       VPNConfig vpn_config
   );
+
+  SessionContext &getClientSession();
+  SessionContext &getServerSession();
+  const SessionContext &getClientSession() const;
+  const SessionContext &getServerSession() const;
 
   void init(
       std::shared_ptr<Multiplexer> multiplexer,
@@ -153,37 +247,38 @@ class ReliableLayer {
   uint8_t getKeyId() const;
   uint32_t nextPacketId();
 
-  void process();
   UnwrapResult unwrap(
-      ReliableLayer::LazyAckContext& ack_context,
+      ReliableLayer::LazyAckContext &ack_context,
       protocol::reliable::OpCode opcode,
       uint8_t key_id,
       const unsigned char *data,
       size_t length,
-      std::shared_ptr<jcu::unio::Buffer> output_buffer
+      jcu::unio::Buffer* output
   );
-  void sendLazyAcks(ReliableLayer::LazyAckContext& ack_context, CompletionOnceCallback<jcu::unio::SocketWriteEvent> callback);
+  void doNextOperationAndSendLazyAcks(
+      ReliableLayer::LazyAckContext *ack_context
+  );
 
-  UnwrapResult handleControlPayload(
-      ReliableLayer::LazyAckContext& ack_context,
+  bool handleControlPayload(
+      ReliableLayer::LazyAckContext &ack_context,
       protocol::reliable::OpCode op_code,
       uint8_t key_id,
       const unsigned char *data,
-      size_t length,
-      std::shared_ptr<jcu::unio::Buffer> output_buffer
+      size_t length
   );
-  UnwrapResult handleAckV1Payload(
-      ReliableLayer::LazyAckContext& ack_context,
+  bool handleAckV1Payload(
+      ReliableLayer::LazyAckContext &ack_context,
       protocol::reliable::OpCode op_code,
       uint8_t key_id,
       const unsigned char *data,
       size_t length
   );
 
+  void handleTlsPayload(jcu::unio::Buffer* buffer);
+
   void sendControlHardResetClientV2();
 
-  void prepareControlV1Payload(protocol::reliable::ControlV1Payload &payload, uint32_t packet_id);
-  void prepareAckV1Payload(protocol::reliable::AckV1Payload &payload);
+  void prepareSessionPayload(protocol::reliable::SessionReliablePayload &payload);
   void sendAckV1(
       int packet_id_count,
       const uint32_t *packet_ids,
@@ -194,21 +289,37 @@ class ReliableLayer {
       uint32_t packet_id,
       std::shared_ptr<jcu::unio::Buffer> buffer,
       jcu::unio::CompletionOnceCallback<jcu::unio::SocketWriteEvent> callback);
+
+ private:
+  bool openvpn_PRF(
+      const uint8_t *secret,
+      int secret_len,
+      const char *label,
+      const uint8_t *client_seed,
+      int client_seed_len,
+      const uint8_t *server_seed,
+      int server_seed_len,
+      const unsigned char *client_sid,
+      const unsigned char *server_sid,
+      uint8_t *output,
+      int output_len
+  );
+  bool generateKeyExpansion(key2 *pkey2);
+  bool generateKeyExpansionOvpnPRF(key2 *pkey2);
+  void initKeyContexts(KeyState& key_state, key2* pkey2, const char* key_name);
+
+  void sendKeyState();
+
+  UnwrapResult unwrapDataPayload(
+      protocol::reliable::OpCode opcode,
+      uint8_t key_id,
+      const unsigned char *data,
+      size_t length,
+      jcu::unio::Buffer* output
+  );
 };
 
-//struct CryptoContext {
-//  std::unique_ptr<crypto::CipherContext> cipher;
-//  std::unique_ptr<crypto::AuthContext> hmac;
-//  std::vector<unsigned char> implicit_iv;
-//
-//  void setImplicitIV(const unsigned char* key, int length) {
-//    implicit_iv.clear();
-//    if (cipher->isAEADMode()) {
-//      size_t impl_iv_len = cipher->getIVSize() - sizeof(packet_id_t);
-//      implicit_iv.insert(implicit_iv.end(), key, key + impl_iv_len);
-//    }
-//  }
-//};
+
 //
 ///**
 // * Container for unidirectional cipher and HMAC %key material.

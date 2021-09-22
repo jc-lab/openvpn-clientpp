@@ -13,6 +13,11 @@
 #include "buffer_with_header.h"
 #include "multiplexer.h"
 
+# define EVP_MAX_MD_SIZE                 64/* longest known is SHA512 */
+# define EVP_MAX_KEY_LENGTH              64
+# define EVP_MAX_IV_LENGTH               16
+# define EVP_MAX_BLOCK_LENGTH            32
+
 //#include <cstring>
 //#include <utility>
 //
@@ -24,13 +29,113 @@
 //
 //#include "../protocol/reliable.h"
 //#include "../protocol/control.h"
-//
-//#define KEY_EXPANSION_ID "OpenVPN"
-//
+
+#define KEY_EXPANSION_ID "OpenVPN"
+
 namespace ovpnc {
 namespace transport {
 
 #define KEY_ID_MASK 0x07 // 3bit (111b)
+
+static void dump(const void* ptr, int size) {
+  const unsigned char* p = (const unsigned char*)ptr;
+  fprintf(stderr, "DUMP (%d) \n", size);
+  for (int i=0; i<size; i++) fprintf(stderr, "%02x ", *(p++));
+  fprintf(stderr, "\n");
+}
+
+ReliableLayer::SessionContext::SessionContext() {
+  std::memset(&session_id, 0, sizeof(session_id));
+  packet_id = 0;
+}
+
+class ReliableLayer::SSLSocketMiddleware : public jcu::unio::StreamSocket {
+ public:
+  std::shared_ptr<ReliableLayer> reliable_;
+
+  std::shared_ptr<jcu::unio::Buffer> read_buffer_;
+  jcu::unio::CompletionManyCallback<jcu::unio::SocketReadEvent> read_callback_;
+
+  SSLSocketMiddleware(std::shared_ptr<ReliableLayer> reliable) :
+      reliable_(reliable) {
+  }
+
+  void emitRead() {
+    if (read_callback_) {
+      jcu::unio::SocketReadEvent event{read_buffer_.get()};
+      read_callback_(event, *this);
+    }
+  }
+
+  void read(
+      std::shared_ptr<jcu::unio::Buffer> buffer,
+      jcu::unio::CompletionManyCallback<jcu::unio::SocketReadEvent> callback
+  ) override {
+    read_buffer_ = buffer;
+    read_callback_ = std::move(callback);
+  }
+
+  void cancelRead() override {
+    read_buffer_.reset();
+    read_callback_ = nullptr;
+//    parent_socket_->cancelRead();
+  }
+
+  void write(
+      std::shared_ptr<jcu::unio::Buffer> buffer,
+      jcu::unio::CompletionOnceCallback<jcu::unio::SocketWriteEvent> callback
+  ) override {
+    auto lazy_ack_context = reliable_->lazy_ack_context_;
+
+    size_t header_capacity = buffer->position();
+    int socket_header_size = reliable_->multiplexer_->getRequiredSocketHeader();
+    uint32_t packet_id = reliable_->nextPacketId();
+    protocol::reliable::ControlV1Payload control(protocol::reliable::OpCode::P_CONTROL_V1);
+    reliable_->prepareSessionPayload(control);
+    control.setPacketId(packet_id);
+    if (lazy_ack_context && !lazy_ack_context->isSent() && !lazy_ack_context->getAckPacketIds().empty()) {
+      int count = lazy_ack_context->getAckPacketIds().size();
+      const uint32_t *acks = lazy_ack_context->getAckPacketIds().data();
+      control.setAckPacketIdArrayLength(count);
+      for (int i = 0; i < count; i++) {
+        control.ackPacketIdArray()[i] = acks[i];
+      }
+      lazy_ack_context->setSent();
+    }
+
+    // set control
+    int header_size = control.getSerializedSize();
+    assert (header_capacity >= (socket_header_size + header_size));
+    unsigned char *base_ptr = ((unsigned char *) buffer->data()) - header_size;
+    control.serializeTo(base_ptr);
+    buffer->position(header_capacity - header_size);
+
+    reliable_->sendWithRetry(control.getOpCode(), packet_id, buffer, std::move(callback));
+  }
+
+  void connect(
+      std::shared_ptr<jcu::unio::ConnectParam> connect_param,
+      jcu::unio::CompletionOnceCallback<jcu::unio::SocketConnectEvent> callback
+  ) override {
+    jcu::unio::SocketConnectEvent event{};
+    callback(event, *this);
+  }
+
+  void disconnect(
+      jcu::unio::CompletionOnceCallback<jcu::unio::SocketDisconnectEvent> callback
+  ) override {
+    jcu::unio::SocketDisconnectEvent event;
+    callback(event, *this);
+//    multiplexer_->parent_socket_->disconnect(std::move(callback));
+  }
+
+  bool isConnected() const override {
+    return reliable_->multiplexer_->isConnected();
+  }
+
+  void close() override {
+  }
+};
 
 std::shared_ptr<ReliableLayer> ReliableLayer::create(
     std::shared_ptr<jcu::unio::Loop> loop,
@@ -51,21 +156,50 @@ ReliableLayer::ReliableLayer(
     logger_(logger),
     vpn_config_(vpn_config),
     mode_(kClientMode),
-    key_id_(-1),
-    local_packet_id_(0),
-    peer_packet_id_(0),
-    peer_inited_(false) {
+    peer_inited_(false),
+    lazy_ack_context_(nullptr) {
   random_ = vpn_config_.crypto_provider->createRandom();
-  random_->nextBytes(local_session_id_, sizeof(local_session_id_));
+  random_->nextBytes(key_state_.local.session_id, sizeof(key_state_.local.session_id));
+  key_state_.key_id = -1;
   keyStateInit();
+}
+
+ReliableLayer::SessionContext &ReliableLayer::getClientSession() {
+  if (mode_ == kServerMode) return key_state_.peer;
+  else return key_state_.local;
+}
+
+ReliableLayer::SessionContext &ReliableLayer::getServerSession() {
+  if (mode_ == kServerMode) return key_state_.local;
+  else return key_state_.peer;
+}
+
+const ReliableLayer::SessionContext &ReliableLayer::getClientSession() const {
+  if (mode_ == kServerMode) return key_state_.peer;
+  else return key_state_.local;
+}
+
+const ReliableLayer::SessionContext &ReliableLayer::getServerSession() const {
+  if (mode_ == kServerMode) return key_state_.local;
+  else return key_state_.peer;
 }
 
 void ReliableLayer::init(
     std::shared_ptr<Multiplexer> multiplexer,
     std::shared_ptr<jcu::unio::Buffer> send_message_buffer
 ) {
+  std::shared_ptr<ReliableLayer> self(self_.lock());
+
   multiplexer_ = multiplexer;
   send_message_buffer_ = send_message_buffer;
+
+  if (!vpn_config_.psk_mode) {
+    ssl_socket_middleware_ = std::make_shared<SSLSocketMiddleware>(self);
+    ssl_buffer_ = jcu::unio::createFixedSizeBuffer(8192);
+    ssl_socket_ = jcu::unio::SSLSocket::create(loop_, logger_, vpn_config_.ssl_context);
+    ssl_socket_->setParent(ssl_socket_middleware_);
+    ssl_socket_->setSocketOutboundBuffer(send_message_buffer_);
+  }
 }
 
 void ReliableLayer::close() {
@@ -74,29 +208,23 @@ void ReliableLayer::close() {
 }
 
 void ReliableLayer::keyStateInit() {
-  if (key_id_ < 0) {
-    key_id_ = 0;
+  if (key_state_.key_id < 0) {
+    key_state_.key_id = 0;
   } else {
     // increment key_id
-    key_id_ = (key_id_ + 1) & KEY_ID_MASK;
-    if (!key_id_) key_id_ = 1;
+    key_state_.key_id = (key_state_.key_id + 1) & KEY_ID_MASK;
+    if (!key_state_.key_id) key_state_.key_id = 1;
   }
 
-  if (mode_ == kServerMode) {
-    next_op_ = protocol::reliable::P_CONTROL_HARD_RESET_SERVER_V2;
-  } else {
-    bool tls_crypt_v2 = false;
-    next_op_ = tls_crypt_v2 ? protocol::reliable::P_CONTROL_HARD_RESET_CLIENT_V3
-                            : protocol::reliable::P_CONTROL_HARD_RESET_CLIENT_V2;
-  }
+  key_state_.state = kKeyStateInitial;
 }
 
 uint8_t ReliableLayer::getKeyId() const {
-  return key_id_;
+  return key_state_.key_id;
 }
 
 uint32_t ReliableLayer::nextPacketId() {
-  return local_packet_id_++;
+  return key_state_.local.packet_id++;
 }
 
 void ReliableLayer::sendWithRetry(
@@ -162,29 +290,9 @@ void ReliableLayer::sendWithRetry(
       });
 }
 
-void ReliableLayer::prepareControlV1Payload(protocol::reliable::ControlV1Payload &payload, uint32_t packet_id) {
-  payload.setSessionId(local_session_id_);
-  payload.setRemoteSessionId(peer_session_id_);
-  payload.setPacketId(packet_id);
-}
-
-void ReliableLayer::prepareAckV1Payload(protocol::reliable::AckV1Payload &payload) {
-  payload.setSessionId(local_session_id_);
-  payload.setRemoteSessionId(peer_session_id_);
-}
-
-void ReliableLayer::process() {
-  auto next_op_code = next_op_;
-  fprintf(stderr,
-          "reliableProcess: next_op = %d / %s\n",
-          next_op_code,
-          protocol::reliable::ProtocolUtil::opcodeName(next_op_code));
-
-  switch (next_op_code) {
-    case protocol::reliable::P_CONTROL_HARD_RESET_CLIENT_V2:
-      sendControlHardResetClientV2();
-      break;
-  }
+void ReliableLayer::prepareSessionPayload(protocol::reliable::SessionReliablePayload &payload) {
+  payload.setSessionId(key_state_.local.session_id);
+  payload.setRemoteSessionId(key_state_.peer.session_id);
 }
 
 ReliableLayer::UnwrapResult ReliableLayer::unwrap(
@@ -193,9 +301,9 @@ ReliableLayer::UnwrapResult ReliableLayer::unwrap(
     uint8_t key_id,
     const unsigned char *data,
     size_t length,
-    std::shared_ptr<jcu::unio::Buffer> output_buffer
+    jcu::unio::Buffer* output
 ) {
-  int results = UnwrapResult::kUnwrapOk;
+  int results = false;
 
   fprintf(stderr,
           "reliableProcess: unwrap: op = %d / %s\n",
@@ -215,24 +323,25 @@ ReliableLayer::UnwrapResult ReliableLayer::unwrap(
           opcode,
           key_id,
           data,
-          length,
-          output_buffer);
+          length);
       break;
     case protocol::reliable::P_ACK_V1:
       results = handleAckV1Payload(ack_context, opcode, key_id, data, length);
       break;
+    case protocol::reliable::P_DATA_V1:
+    case protocol::reliable::P_DATA_V2:
+      return unwrapDataPayload(opcode, key_id, data, length, output);
   }
 
-  return (UnwrapResult) results;
+  return results ? kUnwrapOk : kUnwrapFailed;
 }
 
-ReliableLayer::UnwrapResult ReliableLayer::handleControlPayload(
+bool ReliableLayer::handleControlPayload(
     ReliableLayer::LazyAckContext &ack_context,
     protocol::reliable::OpCode op_code,
     uint8_t key_id,
     const unsigned char *data,
-    size_t length,
-    std::shared_ptr<jcu::unio::Buffer> output_buffer
+    size_t length
 ) {
   int results = 0;
 
@@ -240,35 +349,66 @@ ReliableLayer::UnwrapResult ReliableLayer::handleControlPayload(
   int proceed_length = control_payload.deserializeFrom(data, length);
   if (proceed_length < 0) {
     logger_->logf(jcu::unio::Logger::kLogError, "ReliableLayer: handleControlPayload: deserialize failed");
-    return kUnwrapFailed;
+    return false;
   }
 
   if (!preprocessPayload(control_payload)) {
-    return kUnwrapFailed;
+    return false;
   }
 
   if (op_code == protocol::reliable::P_CONTROL_V1) {
     size_t data_size = length - proceed_length;
-    output_buffer->clear();
-    assert(data_size <= output_buffer->remaining());
-    std::memcpy(output_buffer->data(), data + proceed_length, data_size);
-    output_buffer->position(output_buffer->position() + data_size);
-    fprintf(stderr, "unwrap data_size: %d\n", data_size);
-    output_buffer->flip();
-    results |= kUnwrapHasData;
+    auto &read_buffer = ssl_socket_middleware_->read_buffer_;
+    assert(read_buffer != nullptr);
+    lazy_ack_context_ = &ack_context;
+    ssl_socket_middleware_->read_buffer_->clear();
+    assert(data_size <= read_buffer->remaining());
+    std::memcpy(read_buffer->data(), data + proceed_length, data_size);
+    read_buffer->position(read_buffer->position() + data_size);
+    read_buffer->flip();
+    ssl_socket_middleware_->emitRead();
+    lazy_ack_context_ = nullptr;
   }
 
   ack_context.addPacketId(control_payload.packetId());
 
   if ((control_payload.getOpCode() == protocol::reliable::P_CONTROL_HARD_RESET_SERVER_V2)
       || (control_payload.getOpCode() == protocol::reliable::P_CONTROL_HARD_RESET_SERVER_V1)) {
-    results |= kUnwrapStartSession;
+    auto self(self_.lock());
+    auto param = std::make_shared<jcu::unio::SockAddrConnectParam<sockaddr>>();
+    param->setHostname(vpn_config_.remote_host);
+    ssl_socket_->connect(param, [self](auto &event, auto &resource) -> void {
+      auto &handle = dynamic_cast<jcu::unio::SSLSocket &>(resource);
+      fprintf(stderr, "TLS HANDSHAKED!!!!!!!!!!!!!!!\n");
+      handle.read(self->ssl_buffer_, [self](auto &event, auto &resource) -> void {
+        self->handleTlsPayload(event.buffer());
+      });
+      self->key_state_.state = kKeyStateStart;
+    });
   }
 
-  return (UnwrapResult) results;
+  return true;
 }
 
-ReliableLayer::UnwrapResult ReliableLayer::handleAckV1Payload(
+//TODO: ssl_socket_->cancelRead()
+
+void ReliableLayer::handleTlsPayload(jcu::unio::Buffer* buffer) {
+  auto& peer_session = key_state_.peer;
+
+  peer_session.key_method.init(true);
+  peer_session.key_method.deserializeFrom((const unsigned char*) buffer->data(), buffer->remaining());
+
+  bool result = peer_session.data_channel_options.deserialize(peer_session.key_method.optionsString());
+  fprintf(stderr, "handleTlsPayload: size=%d : %s : deser=%d\n", buffer->remaining(), peer_session.key_method.optionsString().c_str(), result);
+
+  struct key2 temp_key2;
+  generateKeyExpansion(&temp_key2);
+  initKeyContexts(key_state_, &temp_key2, "Data Channel");
+  key_state_.state = kKeyStateEstablished;
+  logger_->logf(jcu::unio::Logger::kLogDebug, "ReliableLayer: kEstablishedState");
+}
+
+bool ReliableLayer::handleAckV1Payload(
     ReliableLayer::LazyAckContext &ack_context,
     protocol::reliable::OpCode op_code,
     uint8_t key_id,
@@ -281,14 +421,14 @@ ReliableLayer::UnwrapResult ReliableLayer::handleAckV1Payload(
   int proceed_length = ack_payload.deserializeFrom(data, length);
   if (proceed_length < 0) {
     logger_->logf(jcu::unio::Logger::kLogError, "ReliableLayer: handleAckV1Payload: deserialize failed");
-    return kUnwrapFailed;
+    return false;
   }
 
   if (!preprocessPayload(ack_payload)) {
-    return kUnwrapFailed;
+    return false;
   }
 
-  return kUnwrapOk;
+  return true;
 }
 
 bool ReliableLayer::preprocessPayload(const protocol::reliable::SessionReliablePayload &payload) {
@@ -296,7 +436,7 @@ bool ReliableLayer::preprocessPayload(const protocol::reliable::SessionReliableP
 
   // Check ACK
   if (payload.hasRemoteSessionId()) {
-    if (std::memcmp(local_session_id_, payload.remoteSessionId(), sizeof(local_session_id_)) != 0) {
+    if (std::memcmp(key_state_.local.session_id, payload.remoteSessionId(), sizeof(key_state_.local.session_id)) != 0) {
       logger_->logf(jcu::unio::Logger::kLogError, "ReliableLayer: preprocessPayload: invalid session id");
       return false;
     }
@@ -305,7 +445,7 @@ bool ReliableLayer::preprocessPayload(const protocol::reliable::SessionReliableP
   if ((payload.getOpCode() == protocol::reliable::P_CONTROL_HARD_RESET_SERVER_V2)
       || (payload.getOpCode() == protocol::reliable::P_CONTROL_HARD_RESET_SERVER_V1)) {
     if (!peer_inited_) {
-      std::memcpy(peer_session_id_, payload.sessionId(), sizeof(peer_session_id_));
+      std::memcpy(key_state_.peer.session_id, payload.sessionId(), sizeof(key_state_.peer.session_id));
       peer_inited_ = true;
     }
   }
@@ -346,8 +486,8 @@ void ReliableLayer::sendControlHardResetClientV2() {
   auto buffer = multiplexer_->createMessageBuffer();
   uint32_t packet_id = nextPacketId();
   protocol::reliable::ControlV1Payload control(protocol::reliable::OpCode::P_CONTROL_HARD_RESET_CLIENT_V2);
-  prepareControlV1Payload(control, packet_id);
-
+  prepareSessionPayload(control);
+  control.setPacketId(packet_id);
   buffer->clear();
   int header_size = control.getSerializedSize();
   control.serializeTo((unsigned char *) buffer->data());
@@ -371,7 +511,7 @@ void ReliableLayer::sendAckV1(
   for (int i = 0; i < packet_id_count; i++) {
     ack_payload.ackPacketIdArray()[i] = packet_ids[i];
   }
-  prepareAckV1Payload(ack_payload);
+  prepareSessionPayload(ack_payload);
 
   buffer->clear();
   int header_size = ack_payload.getSerializedSize();
@@ -382,18 +522,374 @@ void ReliableLayer::sendAckV1(
   multiplexer_->write(ack_payload.getOpCode(), buffer, std::move(callback));
 }
 
-void ReliableLayer::sendLazyAcks(ReliableLayer::LazyAckContext &ack_context, CompletionOnceCallback<jcu::unio::SocketWriteEvent> callback) {
-  if (ack_context.isSent() || ack_context.getAckPacketIds().empty()) {
-    jcu::unio::SocketWriteEvent event {};
-    callback(event);
-    return ;
+void ReliableLayer::doNextOperationAndSendLazyAcks(
+    ReliableLayer::LazyAckContext *ack_context
+) {
+  lazy_ack_context_ = ack_context;
+  switch (key_state_.state) {
+    case kKeyStateInitial:
+      //      if (mode_ == kServerMode) {
+//        next_op_ = protocol::reliable::P_CONTROL_HARD_RESET_SERVER_V2;
+//      } else {
+//        bool tls_crypt_v2 = false;
+//        next_op_ = tls_crypt_v2 ? protocol::reliable::P_CONTROL_HARD_RESET_CLIENT_V3
+//                                : protocol::reliable::P_CONTROL_HARD_RESET_CLIENT_V2;
+//      }
+      if (mode_ == kClientMode) {
+        sendControlHardResetClientV2();
+      }
+      key_state_.state = kKeyStatePreStart;
+      break;
+    case kKeyStateStart:
+      sendKeyState();
+      break;
   }
-  ack_context.setSent();
-  fprintf(stderr, "sendLazyAcks count=%d\n", ack_context.getAckPacketIds().size());
-  sendAckV1(ack_context.getAckPacketIds().size(), ack_context.getAckPacketIds().data(), [callback = std::move(callback)](auto& event, auto& handle) -> void {
-    callback(event);
+  lazy_ack_context_ = nullptr;
+
+  if (ack_context) {
+    if (ack_context->isSent() || ack_context->getAckPacketIds().empty()) {
+      return;
+    }
+    ack_context->setSent();
+    fprintf(stderr, "doNextOperationAndSendLazyAcks count=%d\n", ack_context->getAckPacketIds().size());
+    sendAckV1(
+        ack_context->getAckPacketIds().size(),
+        ack_context->getAckPacketIds().data(),
+        [](auto &event, auto &handle) -> void {
+          //TODO: ERROR HANDLING
+        });
+  }
+}
+
+ReliableLayer::UnwrapResult ReliableLayer::unwrapDataPayload(
+    protocol::reliable::OpCode opcode,
+    uint8_t key_id,
+    const unsigned char *data,
+    size_t length,
+    jcu::unio::Buffer* output
+) {
+  auto& inbound_crypto = key_state_.inbound_crypto;
+  auto& inbound_session = key_state_.peer;
+  const unsigned char *p = data;
+  const unsigned char *end = data + length;
+
+  const unsigned char* ad_start = nullptr;
+  const unsigned char* tag_ptr = nullptr;
+
+  int rc = 0;
+
+  /*
+   * P_DATA message content:
+   *   HMAC of ciphertext IV + ciphertext (if not disabled by
+   *       --auth none).
+   *   Ciphertext IV (size is cipher-dependent, if not disabled by
+   *       --no-iv).
+   *   Tunnel packet ciphertext.
+   */
+
+  if (opcode == protocol::reliable::P_DATA_V2)
+  {
+    ad_start = p - 1;
+    p += 3;
+  } else if (opcode == protocol::reliable::P_DATA_V1) {
+    ad_start = p;
+  }
+
+//  if (inbound_crypto.hmac) {
+//    size_t auth_size = inbound_crypto.hmac->getOutputSize();
+//    const unsigned char* auth_data = data;
+//    data += auth_size;
+//    length -= auth_size;
+//  }
+
+  /* Combine IV from explicit part from packet and implicit part from context */
+  {
+    uint8_t iv[EVP_MAX_IV_LENGTH] = { 0 };
+    //BUFFER OVERFLOW CHECK
+    const int iv_len = inbound_crypto.cipher->getIVSize();
+    const size_t packet_iv_len = iv_len - inbound_crypto.implicit_iv.size();
+    memcpy(iv, p, packet_iv_len);
+    memcpy(iv + packet_iv_len, inbound_crypto.implicit_iv.data(), inbound_crypto.implicit_iv.size());
+    inbound_crypto.cipher->reset(iv);
+  }
+
+  uint32_t packet_id = protocol::reliable::deserializeUint32(data);
+  p += 4;
+
+  tag_ptr = p;
+  auto tag_size = inbound_crypto.cipher->getTagSize();
+  p += tag_size;
+
+  if (inbound_crypto.cipher->isAEADMode()) {
+    /* feed in tag and the authenticated data */
+    const int ad_size = p - ad_start - tag_size;
+
+    rc = inbound_crypto.cipher->updateAD(ad_start, ad_size);
+    fprintf(stderr, "INBOUND>cipher->updateAD rc=%d\n", rc);
+  }
+
+  int block_bytes = inbound_crypto.cipher->getBlockSize();
+
+  output->clear();
+  size_t output_size = end - p + block_bytes;
+  assert (output->remaining() >= output_size);
+
+  int output_bytes = 0;
+  rc = inbound_crypto.cipher->updateData(p, end - p, (unsigned char*)output->data(), output->remaining());
+  fprintf(stderr, "INBOUND>cipher->updateData rc=%d\n", rc);
+  if (rc >= 0) {
+    output_bytes += rc;
+    if (inbound_crypto.cipher->isAEADMode()) {
+      inbound_crypto.cipher->setAEADTag(tag_ptr);
+    }
+    rc = inbound_crypto.cipher->final((unsigned char*)output->data() + rc, output->remaining() - rc);
+    fprintf(stderr, "INBOUND>cipher->final rc=%d\n", rc);
+    if (rc > 0) {
+      output_bytes += rc;
+    }
+  }
+  output->position(output->position() + output_bytes);
+  output->flip();
+
+  return kUnwrapData;
+}
+
+//
+//void ReliableLayer::processData(protocol::reliable::OpCode op_code, const unsigned char *op_begin, const unsigned char *raw_payload, int length) {
+//  const unsigned char *p = raw_payload;
+//  const unsigned char *end = raw_payload + length;
+//  bool no_iv = false;
+//  auto& crypto_ctx = data_crypto_.inbound;
+//  const unsigned char* ad_start;
+//  uint32_t packet_id = 0;
+//  const unsigned char* tag_ptr = nullptr;
+//  int rc;
+//
+//  dump(p, end - p);
+//
+//  if (op_code == protocol::reliable::P_DATA_V2)
+//  {
+//    ad_start = op_begin;
+//    p += 3;
+//  } else if (op_code == protocol::reliable::P_DATA_V1) {
+//    ad_start = raw_payload;
+//  }
+//
+//  /* Combine IV from explicit part from packet and implicit part from context */
+//  {
+//    uint8_t iv[EVP_MAX_IV_LENGTH] = { 0 };
+//    const int iv_len = crypto_ctx.cipher->getIVSize();
+//    const size_t packet_iv_len = iv_len - crypto_ctx.implicit_iv.size();
+//    memcpy(iv, p, packet_iv_len);
+//    memcpy(iv + packet_iv_len, crypto_ctx.implicit_iv.data(), crypto_ctx.implicit_iv.size());
+//    printf("DECRYPT IV : ");
+//    dump(iv, iv_len);
+//    crypto_ctx.cipher->reset(iv);
+//  }
+//
+//  packet_id = protocol::reliable::deserializeUint32(p);
+//  p += 4;
+//
+//  tag_ptr = p;
+//  auto tag_size = crypto_ctx.cipher->getTagSize();
+//  p += tag_size;
+//
+//  if (crypto_ctx.cipher->isAEADMode()) {
+//    /* feed in tag and the authenticated data */
+//    const int ad_size = p - ad_start - tag_size;
+//    rc = crypto_ctx.cipher->updateAD(ad_start, ad_size);
+//  }
+//
+//  int block_bytes = crypto_ctx.cipher->getBlockSize();
+//
+//  std::vector<unsigned char> output_buffer(end - p + block_bytes);
+//  int output_bytes = 0;
+//  rc = crypto_ctx.cipher->updateData(p, end - p, output_buffer.data(), output_buffer.size());
+//  if (rc >= 0) {
+//    output_bytes += rc;
+//    if (crypto_ctx.cipher->isAEADMode()) {
+//      crypto_ctx.cipher->setAEADTag(tag_ptr);
+//    }
+//    rc = crypto_ctx.cipher->final(output_buffer.data() + rc, output_buffer.size() - rc);
+//    if (rc > 0) {
+//      output_bytes += rc;
+//    }
+//  }
+//
+//  logger_->logf(Logger::kLogDebug, "decrypt: %d, %d", rc, output_bytes);
+//  dump(output_buffer.data(), output_bytes);
+//}
+//
+
+//region OpenVPN Key Exchange
+
+bool ReliableLayer::openvpn_PRF(
+    const uint8_t *secret,
+    int secret_len,
+    const char *label,
+    const uint8_t *client_seed,
+    int client_seed_len,
+    const uint8_t *server_seed,
+    int server_seed_len,
+    const unsigned char *client_sid,
+    const unsigned char *server_sid,
+    uint8_t *output,
+    int output_len
+) {
+  const int session_id_size = 8;
+
+  std::vector<unsigned char> seed;
+  seed.reserve(strlen(label) + sizeof(client_seed) + sizeof(server_seed) + session_id_size * 2);
+  seed.insert(seed.end(), label, label + strlen(label));
+  seed.insert(seed.end(), client_seed, client_seed + client_seed_len);
+  seed.insert(seed.end(), server_seed, server_seed + server_seed_len);
+
+  if (client_sid) {
+    seed.insert(seed.end(), client_sid, client_sid + session_id_size);
+  }
+  if (server_sid) {
+    seed.insert(seed.end(), server_sid, server_sid + session_id_size);
+  }
+
+  return vpn_config_.ssl_context->getProvider()->tls1Prf(
+      seed.data(), seed.size(),
+      secret, secret_len,
+      output, output_len
+  );
+}
+
+bool ReliableLayer::generateKeyExpansion(struct key2 *pkey2) {
+  //TODO: tls-ekm option
+  return generateKeyExpansionOvpnPRF(pkey2);
+}
+
+bool ReliableLayer::generateKeyExpansionOvpnPRF(struct key2 *pkey2) {
+  uint8_t master[48] = {0};
+
+  const auto &client_key_source = getClientSession().key_method.keySource();
+  const auto &server_key_source = getServerSession().key_method.keySource();
+  const auto &client_sid = getClientSession().session_id;
+  const auto &server_sid = getServerSession().session_id;
+
+  /* compute master secret */
+  if (!openvpn_PRF(
+      client_key_source.pre_master,
+      sizeof(client_key_source.pre_master),
+      KEY_EXPANSION_ID " master secret",
+      client_key_source.random1,
+      sizeof(client_key_source.random1),
+      server_key_source.random1,
+      sizeof(server_key_source.random1),
+      nullptr,
+      nullptr,
+      master,
+      sizeof(master))) {
+    return false;
+  }
+
+  /* compute key expansion */
+  if (!openvpn_PRF(
+      master,
+      sizeof(master),
+      KEY_EXPANSION_ID " key expansion",
+      client_key_source.random2,
+      sizeof(client_key_source.random2),
+      server_key_source.random2,
+      sizeof(server_key_source.random2),
+      client_sid,
+      server_sid,
+      (uint8_t *) pkey2->keys,
+      sizeof(pkey2->keys))) {
+    return false;
+  }
+
+  random_->nextBytes(master, sizeof(master));
+
+  // DES not supported
+  // fixup not included
+
+  pkey2->n = 2;
+
+  return true;
+}
+
+void ReliableLayer::sendKeyState() {
+  protocol::control::DataChannelOptions &data_channel_options = key_state_.local.data_channel_options;
+
+  data_channel_options.version = "V4";
+  data_channel_options.key_method = 2;
+  data_channel_options.dev_type = "tun";
+  data_channel_options.link_mtu = 1543;
+  data_channel_options.tun_mtu = 1500;
+  if (vpn_config_.protocol == kTransportTcp) {
+    data_channel_options.proto = "tcp";
+  } else {
+    data_channel_options.proto = "udp";
+  }
+  data_channel_options.auth = "none";
+  data_channel_options.key_size = 256;
+  data_channel_options.cipher = "AES-256-GCM";
+  data_channel_options.tls_direction =
+      (mode_ == kServerMode) ? protocol::control::kTlsDirectionServer : protocol::control::kTlsDirectionClient;
+
+  key_state_.local.key_method.init(false);
+  key_state_.local.key_method.setOptionString(data_channel_options.serialize());
+
+  size_t serialized_size = key_state_.local.key_method.getSerializedSize();
+  auto buffer = jcu::unio::createFixedSizeBuffer(serialized_size);
+  buffer->clear();
+  key_state_.local.key_method.serializeTo((unsigned char *) buffer->data());
+  buffer->position(buffer->position() + serialized_size);
+  buffer->flip();
+
+  fprintf(stderr, "doKeyShare: %s\n", key_state_.local.key_method.optionsString().c_str());
+
+  key_state_.state = kKeyStateSent;
+  ssl_socket_->write(buffer, [](auto &event, auto &handle) -> void {
+
   });
 }
+
+void ReliableLayer::initKeyContexts(KeyState& key_state, key2* pkey2, const char* key_name) {
+  char label[256];
+
+  auto& inbound_options = (mode_ == kServerMode) ? key_state_.local.data_channel_options : key_state_.peer.data_channel_options;
+  auto& outbound_options = (mode_ == kServerMode) ? key_state_.peer.data_channel_options : key_state_.local.data_channel_options;
+
+  auto inbound_cipher_algorithm = vpn_config_.crypto_provider->getCipherAlgorithm(inbound_options.cipher);
+  auto inbound_auth_algorithm = vpn_config_.crypto_provider->getAuthAlgorithm(inbound_options.auth);
+  auto outbound_cipher_algorithm = vpn_config_.crypto_provider->getCipherAlgorithm(outbound_options.cipher);
+  auto outbound_auth_algorithm = vpn_config_.crypto_provider->getAuthAlgorithm(outbound_options.auth);
+
+  //TODO: critical! NULL HANDLING
+  //      WHY... BF-CBC & SHA1 :(
+
+  key_state_.inbound_crypto.cipher = inbound_cipher_algorithm->createDecipher();
+  key_state_.inbound_crypto.hmac = inbound_auth_algorithm->create();
+  key_state_.outbound_crypto.cipher = outbound_cipher_algorithm->createEncipher();
+  key_state_.outbound_crypto.hmac = outbound_auth_algorithm->create();
+
+  auto& incoming_crypto = (mode_ == kServerMode) ? key_state_.outbound_crypto : key_state_.inbound_crypto;
+  auto& outgoing_crypto = (mode_ == kServerMode) ? key_state_.inbound_crypto : key_state_.outbound_crypto;
+
+  snprintf(label, sizeof(label), "Outgoing %s", key_name);
+  outgoing_crypto.cipher->init(pkey2->keys[0].cipher);
+  outgoing_crypto.cipher->setTagSize(OPENVPN_AEAD_TAG_LENGTH);
+  if (outgoing_crypto.hmac) {
+    outgoing_crypto.hmac->init(pkey2->keys[0].hmac);
+  }
+  outgoing_crypto.setImplicitIV(pkey2->keys[0].hmac, MAX_HMAC_KEY_LENGTH);
+
+  snprintf(label, sizeof(label), "Incoming %s", key_name);
+  incoming_crypto.cipher->init(pkey2->keys[1].cipher);
+  incoming_crypto.cipher->setTagSize(OPENVPN_AEAD_TAG_LENGTH);
+  if (incoming_crypto.hmac) {
+    incoming_crypto.hmac->init(pkey2->keys[1].hmac);
+  }
+  incoming_crypto.setImplicitIV(pkey2->keys[1].hmac, MAX_HMAC_KEY_LENGTH);
+}
+
+//endregion
 
 //static void dump(const void* ptr, int length) {
 //  const unsigned char* c = (const unsigned char*)ptr;
@@ -886,94 +1382,6 @@ void ReliableLayer::sendLazyAcks(ReliableLayer::LazyAckContext &ack_context, Com
 //  sessionProcess();
 //}
 //
-//bool ReliableLayer::generateKeyExpansion(key2* pkey2) {
-//  //TODO: tls-ekm option
-//  return generateKeyExpansionOvpnPRF(pkey2);
-//}
-//
-//bool ReliableLayer::generateKeyExpansionOvpnPRF(key2* pkey2) {
-//  uint8_t master[48] = { 0 };
-//
-//  const auto& client_key_source = client_key_method_.keySource();
-//  const auto& server_key_source = server_key_method_.keySource();
-//
-//  /* compute master secret */
-//  if (!openvpn_PRF(
-//      client_key_source.pre_master,
-//      sizeof(client_key_source.pre_master),
-//      KEY_EXPANSION_ID " master secret",
-//      client_key_source.random1,
-//      sizeof(client_key_source.random1),
-//      server_key_source.random1,
-//      sizeof(server_key_source.random1),
-//      nullptr,
-//      nullptr,
-//      master,
-//      sizeof(master)))
-//  {
-//    return false;
-//  }
-//
-//  /* compute key expansion */
-//  if (!openvpn_PRF(
-//      master,
-//      sizeof(master),
-//      KEY_EXPANSION_ID " key expansion",
-//      client_key_source.random2,
-//      sizeof(client_key_source.random2),
-//      server_key_source.random2,
-//      sizeof(server_key_source.random2),
-//      client_session_id_,
-//      server_session_id_,
-//      (uint8_t *)pkey2->keys,
-//      sizeof(pkey2->keys)))
-//  {
-//    return false;
-//  }
-//  dump((uint8_t *)pkey2->keys, sizeof(pkey2->keys));
-//
-//  RAND_bytes(master, sizeof(master));
-//
-//  // DES not supported
-//  // fixup not included
-//
-//  pkey2->n = 2;
-//
-//  return true;
-//}
-//
-//bool ReliableLayer::openvpn_PRF(
-//    const uint8_t *secret,
-//    int secret_len,
-//    const char *label,
-//    const uint8_t *client_seed,
-//    int client_seed_len,
-//    const uint8_t *server_seed,
-//    int server_seed_len,
-//    const unsigned char* client_sid,
-//    const unsigned char* server_sid,
-//    uint8_t *output,
-//    int output_len
-//) {
-//  std::vector<unsigned char> seed;
-//  seed.reserve(strlen(label) + client_seed_len + server_seed_len + sizeof(server_session_id_) + sizeof(client_session_id_));
-//  seed.insert(seed.end(), label, label + strlen(label));
-//  seed.insert(seed.end(), client_seed, client_seed + client_seed_len);
-//  seed.insert(seed.end(), server_seed, server_seed + server_seed_len);
-//
-//  if (client_sid) {
-//    seed.insert(seed.end(), client_sid, client_sid + sizeof(client_session_id_));
-//  }
-//  if (server_sid) {
-//    seed.insert(seed.end(), server_sid, server_sid + sizeof(client_session_id_));
-//  }
-//
-//  return tls_layer_->tls1Prf(
-//      seed.data(), seed.size(),
-//      secret, secret_len,
-//      output, output_len
-//  );
-//}
 //
 //void ReliableLayer::sessionProcess() {
 //  bool server_mode = false;
