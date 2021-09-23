@@ -42,8 +42,10 @@ class ClientImpl : public Client {
  public:
   ClientImpl(std::shared_ptr<jcu::unio::Loop> loop, std::shared_ptr<jcu::unio::Logger> logger);
   ~ClientImpl() override;
-  static std::shared_ptr<Client> create(std::shared_ptr<jcu::unio::Loop> loop,
-                                        std::shared_ptr<jcu::unio::Logger> logger);
+  static std::shared_ptr<Client> create(
+      std::shared_ptr<jcu::unio::Loop> loop,
+      std::shared_ptr<jcu::unio::Logger> logger
+  );
 
   void setAutoReconnect(bool auto_reconnect) override;
   bool connect(const VPNConfig &vpn_config) override;
