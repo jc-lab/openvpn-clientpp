@@ -15,6 +15,7 @@
 #include <jcu-unio/net/ssl_socket.h>
 
 #include <ovpnc/client.h>
+#include <ovpnc/push_options.h>
 
 #include <utility>
 
@@ -36,9 +37,7 @@ class ClientImpl : public Client {
   std::shared_ptr<transport::ReliableLayer> reliable_;
   std::shared_ptr<transport::Multiplexer> multiplexer_;
 
-  std::shared_ptr<jcu::unio::Socket> socket_;
-
-  uint64_t send_packet_id_;
+  PushOptions push_options_;
 
  public:
   ClientImpl(std::shared_ptr<jcu::unio::Loop> loop, std::shared_ptr<jcu::unio::Logger> logger);

@@ -1,13 +1,13 @@
 add_library(openvpn_clientpp
         ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/client.h
         ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/vpn_config.h
-        ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/tls_provider.h
-        ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/openssl_tls_provider.h
         ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/crypto/provider.h
         ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/crypto/cipher.h
         ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/crypto/auth.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/push_options.h
 
         ${CMAKE_CURRENT_SOURCE_DIR}/src/client.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/push_options.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/reliable_layer.h
         ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/reliable_layer.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/src/transport/multiplexer.h

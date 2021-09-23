@@ -8,8 +8,6 @@
 #include <ovpnc/client.h>
 #include <ovpnc/vpn_config.h>
 
-#include <ovpnc/openssl_tls_provider.h>
-
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 

@@ -79,6 +79,11 @@ bool ClientImpl::connectImpl() {
       reliable_
   );
 
+  reliable_->onPushReply([self](const std::string& data) -> void {
+    self->logger_->logf(jcu::unio::Logger::kLogInfo, "PUSH_REPLY: %s", data.c_str());
+    self->push_options_.parseFrom(data);
+  });
+
   int mtu = 1400;
   multiplexer_->init(mtu);
 
@@ -107,38 +112,12 @@ void ClientImpl::write(
     std::shared_ptr<Buffer> buffer,
     CompletionOnceCallback<SocketWriteEvent> callback
 ) {
-//  size_t header_capacity = buffer->position();
-//  uint8_t *base_ptr = (uint8_t *) buffer->data();
-//  int header_size = 0;
-//
-//  /**
-//   *  packet_id (4 or 8 bytes, if not disabled by --no-replay).
-//   *      In SSL/TLS mode, 4 bytes are used because the implementation
-//   *      can force a TLS renegotation before 2^32 packets are sent.
-//   *      In pre-shared key mode, 8 bytes are used (sequence number
-//   *      and time_t value) to allow long-term key usage without
-//   *      packet_id collisions.
-//   *  User plaintext (n bytes).
-//   */
-//
-//  if (!vpn_config_.no_replay) {
-//    if (vpn_config_.psk_mode) {
-//      header_size = 8;
-//      assert (header_capacity >= header_size);
-//      base_ptr -= header_size;
-//      protocol::reliable::serializeUint32(base_ptr, send_packet_id_);
-//      base_ptr += 4;
-//      protocol::reliable::serializeUint32(base_ptr, time(nullptr));
-//    } else {
-//      header_size = 4;
-//      assert (header_capacity >= header_size);
-//      base_ptr -= header_size;
-//      protocol::reliable::serializeUint32(base_ptr, send_packet_id_);
-//    }
-//  }
-//  buffer->position(buffer->position() - header_size);
-//  multiplexer_->write(protocol::reliable::OpCode::P_DATA_V1, buffer, std::move(callback));
   std::shared_ptr<ClientImpl> self(self_.lock());
+  if (!multiplexer_->isHandshaked()) {
+    SocketWriteEvent event { UvErrorEvent { UV_ENOTCONN, 0 } };
+    callback(event, *self);
+    return ;
+  }
   multiplexer_->write(std::move(buffer), [self, callback = std::move(callback)](auto& event, auto& resource) mutable -> void {
     callback(event, *self);
   });
