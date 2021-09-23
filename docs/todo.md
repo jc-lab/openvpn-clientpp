@@ -10,3 +10,19 @@
 ### disable no-replay
 
 * if not disabled by --no-replay
+
+### compression
+
+* lzo
+* lz4
+* lz4-v2
+
+### reconnect
+
+### ping
+
+## Performance
+
+## Memory Pool
+
+* write
