@@ -27,21 +27,13 @@ static int alignedSize(int size, int align) {
   return size;
 }
 
-static void dump(void *ptr, int size) {
-  const unsigned char *p = (const unsigned char *) ptr;
-  fprintf(stderr, "DUMP (%d) \n", size);
-  for (int i = 0; i < size; i++) fprintf(stderr, "%02x ", *(p++));
-  fprintf(stderr, "\n");
-}
-
 std::shared_ptr<Multiplexer> Multiplexer::create(
     std::shared_ptr<jcu::unio::Loop> loop,
     std::shared_ptr<jcu::unio::Logger> logger,
-    const VPNConfig &vpn_config,
     std::shared_ptr<jcu::unio::Resource> io_parent,
     std::shared_ptr<ReliableLayer> reliable
 ) {
-  std::shared_ptr<Multiplexer> instance(new Multiplexer(loop, logger, vpn_config, io_parent, reliable));
+  std::shared_ptr<Multiplexer> instance(new Multiplexer(loop, logger, io_parent, reliable));
   instance->self_ = instance;
   return instance;
 }
@@ -53,14 +45,12 @@ std::shared_ptr<Multiplexer> Multiplexer::shared() const {
 Multiplexer::Multiplexer(
     std::shared_ptr<jcu::unio::Loop> loop,
     std::shared_ptr<jcu::unio::Logger> logger,
-    const VPNConfig &vpn_config,
     std::shared_ptr<jcu::unio::Resource> io_parent,
     std::shared_ptr<ReliableLayer> reliable
 ) :
     io_parent_(io_parent),
     loop_(loop),
     logger_(logger),
-    vpn_config_(vpn_config),
     reliable_(reliable),
     local_data_packet_id_(0),
     peer_data_packet_id_(0) {
@@ -96,6 +86,10 @@ void Multiplexer::init(int mtu) {
   send_message_buffer_ = std::make_shared<BufferWithHeader>(getRequiredMessageBufferOffset(), 65536);
   recv_message_buffer_ = std::make_shared<ReceiveBuffer>(65536);
   reliable_->init(self_.lock(), send_message_buffer_);
+}
+
+void Multiplexer::start(const VPNConfig& vpn_config) {
+  vpn_config_ = vpn_config;
 }
 
 void Multiplexer::connect(jcu::unio::CompletionOnceCallback<jcu::unio::SocketConnectEvent> callback) {

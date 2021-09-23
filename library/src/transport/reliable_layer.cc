@@ -154,30 +154,23 @@ class ReliableLayer::SSLSocketMiddleware : public jcu::unio::StreamSocket {
 
 std::shared_ptr<ReliableLayer> ReliableLayer::create(
     std::shared_ptr<jcu::unio::Loop> loop,
-    std::shared_ptr<jcu::unio::Logger> logger,
-    VPNConfig vpn_config
+    std::shared_ptr<jcu::unio::Logger> logger
 ) {
-  auto instance = std::make_shared<ReliableLayer>(std::move(loop), std::move(logger), std::move(vpn_config));
+  auto instance = std::make_shared<ReliableLayer>(std::move(loop), std::move(logger));
   instance->self_ = instance;
   return std::move(instance);
 }
 
 ReliableLayer::ReliableLayer(
     std::shared_ptr<jcu::unio::Loop> loop,
-    std::shared_ptr<jcu::unio::Logger> logger,
-    VPNConfig vpn_config
+    std::shared_ptr<jcu::unio::Logger> logger
 ) :
-    loop_(loop),
-    logger_(logger),
-    vpn_config_(vpn_config),
+    loop_(std::move(loop)),
+    logger_(std::move(logger)),
     mode_(kClientMode),
     peer_inited_(false),
     lazy_ack_context_(nullptr),
     data_opcode_(protocol::reliable::P_DATA_V1) {
-  random_ = vpn_config_.crypto_provider->createRandom();
-  random_->nextBytes(key_state_.local.session_id, sizeof(key_state_.local.session_id));
-  key_state_.key_id = -1;
-  keyStateInit();
 }
 
 bool ReliableLayer::isHandshaked() const {
@@ -220,6 +213,14 @@ void ReliableLayer::init(
     ssl_socket_->setParent(ssl_socket_middleware_);
     ssl_socket_->setSocketOutboundBuffer(send_message_buffer_);
   }
+}
+
+void ReliableLayer::start(const VPNConfig& vpn_config) {
+  vpn_config_ = vpn_config;
+  random_ = vpn_config_.crypto_provider->createRandom();
+  random_->nextBytes(key_state_.local.session_id, sizeof(key_state_.local.session_id));
+  key_state_.key_id = -1;
+  keyStateInit();
 }
 
 void ReliableLayer::close() {
@@ -762,8 +763,6 @@ bool ReliableLayer::wrapData(
   int block_bytes = outbound_crypto.cipher->getBlockSize();
 
   rc = outbound_crypto.cipher->updateData((const unsigned char*) input->data(), input->remaining(), writer.data(), writer.remaining());
-  fprintf(stderr, "ENCRYPT DATA: ");
-  dump(writer.data(), rc);
   if (rc < 0) {
     fprintf(stderr, "OUTBOUND>cipher->updateData rc=%d\n", rc);
     return false;

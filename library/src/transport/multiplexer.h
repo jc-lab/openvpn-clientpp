@@ -92,7 +92,6 @@ class Multiplexer : public jcu::unio::Socket, public jcu::unio::SharedObject<Mul
   static std::shared_ptr<Multiplexer> create(
       std::shared_ptr<jcu::unio::Loop> loop,
       std::shared_ptr<jcu::unio::Logger> logger,
-      const VPNConfig &vpn_config,
       std::shared_ptr<jcu::unio::Resource> io_parent,
       std::shared_ptr<ReliableLayer> reliable
   );
@@ -133,7 +132,6 @@ class Multiplexer : public jcu::unio::Socket, public jcu::unio::SharedObject<Mul
   Multiplexer(
       std::shared_ptr<jcu::unio::Loop> loop,
       std::shared_ptr<jcu::unio::Logger> logger,
-      const VPNConfig &vpn_config,
       std::shared_ptr<jcu::unio::Resource> io_parent,
       std::shared_ptr<ReliableLayer> reliable
   );
@@ -151,6 +149,7 @@ class Multiplexer : public jcu::unio::Socket, public jcu::unio::SharedObject<Mul
    */
   void init(int mtu);
 
+  void start(const VPNConfig& vpn_config);
   void connect(jcu::unio::CompletionOnceCallback<jcu::unio::SocketConnectEvent> callback);
 
   bool isTLS() const;

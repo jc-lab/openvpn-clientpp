@@ -37,7 +37,7 @@ class ClientImpl : public Client {
   std::shared_ptr<transport::ReliableLayer> reliable_;
   std::shared_ptr<transport::Multiplexer> multiplexer_;
 
-  PushOptions push_options_;
+  void init();
 
  public:
   ClientImpl(std::shared_ptr<jcu::unio::Loop> loop, std::shared_ptr<jcu::unio::Logger> logger);
@@ -77,6 +77,8 @@ class ClientImpl : public Client {
   ) override;
   bool isConnected() const override;
   bool isHandshaked() const override;
+
+  void onPushReply(std::function<void(const std::string& options)> callback) override;
 
  private:
   bool connectImpl();

@@ -30,6 +30,7 @@ class Client : public jcu::unio::StreamSocket, public jcu::unio::SharedObject<Cl
 
   virtual void setAutoReconnect(bool auto_reconnect) = 0;
   virtual bool connect(const VPNConfig &vpn_config) = 0;
+  virtual void onPushReply(std::function<void(const std::string& options)> callback) = 0;
 };
 
 } // namespace ovpnc

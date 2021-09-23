@@ -230,14 +230,12 @@ class ReliableLayer {
  public:
   static std::shared_ptr<ReliableLayer> create(
       std::shared_ptr<jcu::unio::Loop> loop,
-      std::shared_ptr<jcu::unio::Logger> logger,
-      VPNConfig vpn_config
+      std::shared_ptr<jcu::unio::Logger> logger
   );
 
   ReliableLayer(
       std::shared_ptr<jcu::unio::Loop> loop,
-      std::shared_ptr<jcu::unio::Logger> logger,
-      VPNConfig vpn_config
+      std::shared_ptr<jcu::unio::Logger> logger
   );
 
   bool isHandshaked() const;
@@ -251,6 +249,7 @@ class ReliableLayer {
       std::shared_ptr<Multiplexer> multiplexer,
       std::shared_ptr<jcu::unio::Buffer> send_message_buffer
   );
+  void start(const VPNConfig& vpn_config);
 
   void close();
 

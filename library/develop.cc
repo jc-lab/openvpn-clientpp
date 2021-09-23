@@ -60,6 +60,9 @@ int mainWrapped() {
   client->setAutoReconnect(true);
   client->connect(config);
 
+  client->onPushReply([](auto& data) -> void {
+    fprintf(stderr, "PUSH_REPLY: %s\n", data.c_str());
+  });
   client->read(jcu::unio::createFixedSizeBuffer(65536), [](auto& event, auto& resource) -> void {
     auto buffer = event.buffer();
     fprintf(stderr, "CLIENT READ [%d]: ", buffer->remaining());

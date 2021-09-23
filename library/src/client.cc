@@ -23,15 +23,20 @@ using namespace ::jcu::unio;
 
 namespace ovpnc {
 
-std::shared_ptr<Client> ClientImpl::create(std::shared_ptr<jcu::unio::Loop> loop,
-                                           std::shared_ptr<jcu::unio::Logger> logger) {
+std::shared_ptr<Client> ClientImpl::create(
+    std::shared_ptr<jcu::unio::Loop> loop,
+    std::shared_ptr<jcu::unio::Logger> logger
+) {
   std::shared_ptr<ClientImpl> instance(new ClientImpl(loop, logger));
   instance->self_ = instance;
+  instance->init();
   return instance;
 }
 
-std::shared_ptr<Client> Client::create(std::shared_ptr<jcu::unio::Loop> loop,
-                                       std::shared_ptr<jcu::unio::Logger> logger) {
+std::shared_ptr<Client> Client::create(
+    std::shared_ptr<jcu::unio::Loop> loop,
+    std::shared_ptr<jcu::unio::Logger> logger
+) {
   return ClientImpl::create(std::move(loop), std::move(logger));
 }
 
@@ -50,6 +55,19 @@ std::shared_ptr<Client> ClientImpl::shared() const {
   return self_.lock();
 }
 
+void ClientImpl::init() {
+  reliable_ = transport::ReliableLayer::create(
+      loop_,
+      logger_
+  );
+  multiplexer_ = transport::Multiplexer::create(
+      loop_,
+      logger_,
+      self_.lock(),
+      reliable_
+  );
+}
+
 void ClientImpl::setAutoReconnect(bool auto_reconnect) {
   auto_reconnect_ = auto_reconnect;
 }
@@ -66,23 +84,8 @@ bool ClientImpl::connectImpl() {
     vpn_config_.crypto_provider.reset(new crypto::DefaultProvider());
   }
 
-  reliable_ = transport::ReliableLayer::create(
-      loop_,
-      logger_,
-      vpn_config_
-  );
-  multiplexer_ = transport::Multiplexer::create(
-      loop_,
-      logger_,
-      vpn_config_,
-      self,
-      reliable_
-  );
-
-  reliable_->onPushReply([self](const std::string& data) -> void {
-    self->logger_->logf(jcu::unio::Logger::kLogInfo, "PUSH_REPLY: %s", data.c_str());
-    self->push_options_.parseFrom(data);
-  });
+  reliable_->start(vpn_config_);
+  multiplexer_->start(vpn_config_);
 
   int mtu = 1400;
   multiplexer_->init(mtu);
@@ -99,9 +102,10 @@ void ClientImpl::read(
     CompletionManyCallback<SocketReadEvent> callback
 ) {
   std::shared_ptr<ClientImpl> self(self_.lock());
-  multiplexer_->read(std::move(buffer), [self, callback = std::move(callback)](auto& event, auto& resource) mutable -> void {
-    callback(event, *self);
-  });
+  multiplexer_->read(std::move(buffer),
+                     [self, callback = std::move(callback)](auto &event, auto &resource) mutable -> void {
+                       callback(event, *self);
+                     });
 }
 
 void ClientImpl::cancelRead() {
@@ -114,13 +118,15 @@ void ClientImpl::write(
 ) {
   std::shared_ptr<ClientImpl> self(self_.lock());
   if (!multiplexer_->isHandshaked()) {
-    SocketWriteEvent event { UvErrorEvent { UV_ENOTCONN, 0 } };
+    SocketWriteEvent event{UvErrorEvent{UV_ENOTCONN, 0}};
     callback(event, *self);
-    return ;
+    return;
   }
-  multiplexer_->write(std::move(buffer), [self, callback = std::move(callback)](auto& event, auto& resource) mutable -> void {
-    callback(event, *self);
-  });
+  multiplexer_->write(
+      std::move(buffer),
+      [self, callback = std::move(callback)](auto &event, auto &resource) mutable -> void {
+        callback(event, *self);
+      });
 }
 
 void ClientImpl::connect(
@@ -128,6 +134,8 @@ void ClientImpl::connect(
     CompletionOnceCallback<SocketConnectEvent> callback
 ) {
   // DO NOT USE IT
+  SocketConnectEvent event{UvErrorEvent{UV_ENOTSUP, 0}};
+  callback(event, *this);
 }
 
 void ClientImpl::disconnect(
@@ -135,14 +143,22 @@ void ClientImpl::disconnect(
 ) {
 }
 bool ClientImpl::isConnected() const {
+  if (!multiplexer_) return false;
   return multiplexer_->isConnected();
 }
 bool ClientImpl::isHandshaked() const {
+  if (!multiplexer_) return false;
   return multiplexer_->isHandshaked();
 }
-
 void ClientImpl::close() {
-  multiplexer_->close();
+  if (multiplexer_) {
+    multiplexer_->close();
+  }
+}
+
+void ClientImpl::onPushReply(std::function<void(const std::string &options)> callback) {
+  assert(reliable_.get());
+  reliable_->onPushReply(std::move(callback));
 }
 
 } // namespace ovpnc
