@@ -1,4 +1,4 @@
-add_library(openvpn_clientpp
+add_library(ovpnc
         ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/client.h
         ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/vpn_config.h
         ${CMAKE_CURRENT_SOURCE_DIR}/inc/ovpnc/crypto/provider.h
@@ -36,13 +36,13 @@ add_library(openvpn_clientpp
         )
 
 target_include_directories(
-        openvpn_clientpp
+        ovpnc
         PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/inc
 )
 
 target_link_libraries(
-        openvpn_clientpp
+        ovpnc
         PUBLIC
         jcu_unio
         uv_a
@@ -51,7 +51,7 @@ target_link_libraries(
 )
 if (WIN32)
     target_link_libraries(
-            openvpn_clientpp
+            ovpnc
             PUBLIC
             ws2_32
             iphlpapi
@@ -60,4 +60,4 @@ if (WIN32)
 endif ()
 
 add_executable(develop develop.cc)
-target_link_libraries(develop PUBLIC openvpn_clientpp)
+target_link_libraries(develop PUBLIC ovpnc)
