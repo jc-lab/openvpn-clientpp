@@ -156,7 +156,7 @@ void ClientImpl::close() {
   }
 }
 
-void ClientImpl::onPushReply(std::function<void(const std::string &options)> callback) {
+void ClientImpl::onPushReply(std::function<void(const PushOptions& options)> callback) {
   assert(reliable_.get());
   reliable_->onPushReply(std::move(callback));
 }

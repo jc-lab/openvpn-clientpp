@@ -21,7 +21,8 @@ void PushOptions::parseFrom(const std::string &input) {
   char* token;
   char* context = nullptr;
 
-  raw_.clear();
+  cached_raw_ = input;
+  map_.clear();
 
   token = strtok_s((char*) buffer.data(), ",", &context);
   while (token) {
@@ -29,7 +30,7 @@ void PushOptions::parseFrom(const std::string &input) {
     const char* key = strtok_s(token, " ", &value);
     assert(key);
 
-    auto& list = raw_[key];
+    auto& list = map_[key];
     list.emplace_back(value);
 
     token = strtok_s(nullptr, ",", &context);
@@ -37,6 +38,22 @@ void PushOptions::parseFrom(const std::string &input) {
 
   // PUSH_REPLY,route 192.168.20.0 255.255.255.0,redirect-gateway def1 bypass-dhcp,dhcp-option DNS 8.8.8.8,route-gateway 10.8.0.1,topology subnet,ping 10,ping-restart 120,ifconfig 10.8.0.4 255.255.255.0
   // route-gateway 10.8.0.1,topology subnet,ping 10,ping-restart 120,ifconfig 10.8.0.4 255.255.255.0
+}
+
+std::string PushOptions::getRawString() {
+  std::string raw;
+
+  for (auto map_iter = map_.cbegin(); map_iter != map_.cend(); map_iter++) {
+    if (!raw.empty()) raw.append(",");
+    for (auto list_iter = map_iter->second.cbegin(); list_iter != map_iter->second.cend(); list_iter++) {
+      raw.append(map_iter->first);
+      raw.append(" ");
+      raw.append(*list_iter);
+    }
+  }
+
+  cached_raw_ = raw;
+  return raw;
 }
 
 } // namespace ovpnc

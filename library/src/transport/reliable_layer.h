@@ -19,6 +19,7 @@
 #include <jcu-unio/net/ssl_socket.h>
 
 #include <ovpnc/vpn_config.h>
+#include <ovpnc/push_options.h>
 #include <ovpnc/crypto/provider.h>
 #include <ovpnc/crypto/cipher.h>
 #include <ovpnc/crypto/auth.h>
@@ -219,8 +220,8 @@ class ReliableLayer {
   std::shared_ptr<jcu::unio::Buffer> send_message_buffer_;
   std::list<LastSendPacket> send_packets_;
 
-  std::string last_push_reply_;
-  std::function<void(const std::string& options)> push_reply_callback_;
+  PushOptions last_push_reply_;
+  std::function<void(const PushOptions& options)> push_reply_callback_;
 
   void handleReceivedAcks(const protocol::reliable::SessionReliablePayload &payload);
   bool preprocessPayload(const protocol::reliable::SessionReliablePayload &payload);
@@ -311,7 +312,7 @@ class ReliableLayer {
       std::shared_ptr<jcu::unio::Buffer> buffer,
       jcu::unio::CompletionOnceCallback<jcu::unio::SocketWriteEvent> callback);
 
-  void onPushReply(std::function<void(const std::string& options)> callback);
+  void onPushReply(std::function<void(const PushOptions& options)> callback);
 
  private:
   bool openvpn_PRF(

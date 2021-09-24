@@ -984,14 +984,14 @@ void ReliableLayer::initKeyContexts(KeyState& key_state, key2* pkey2, const char
 
 
 void ReliableLayer::emitPushReply(const char* data) {
-  last_push_reply_ = data;
+  last_push_reply_.parseFrom(data);
   if (push_reply_callback_) {
     push_reply_callback_(last_push_reply_);
   }
 }
 
-void ReliableLayer::onPushReply(std::function<void(const std::string& options)> callback) {
-  if (!last_push_reply_.empty()) {
+void ReliableLayer::onPushReply(std::function<void(const PushOptions& options)> callback) {
+  if (!last_push_reply_.map().empty()) {
     callback(last_push_reply_);
   }
   push_reply_callback_ = std::move(callback);

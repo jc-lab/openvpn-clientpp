@@ -78,7 +78,7 @@ class ClientImpl : public Client {
   bool isConnected() const override;
   bool isHandshaked() const override;
 
-  void onPushReply(std::function<void(const std::string& options)> callback) override;
+  void onPushReply(std::function<void(const PushOptions& options)> callback) override;
 
  private:
   bool connectImpl();

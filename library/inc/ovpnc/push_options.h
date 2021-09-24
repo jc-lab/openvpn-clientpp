@@ -21,40 +21,52 @@ class PushOptions {
  public:
   typedef std::map<std::string, std::list<std::string>> MapType;
 
+ private:
+  std::list<std::string> empty_list_;
+
  protected:
-  MapType raw_;
+  MapType map_;
+  std::string cached_raw_;
 
  public:
   const MapType& map() const {
-    return raw_;
+    return map_;
   }
 
+  const std::string& cachedRaw() const {
+    return cached_raw_;
+  }
+
+  std::string getRawString();
+
   MapType& map() {
-    return raw_;
+    return map_;
   }
 
   std::string findFirst(const char* key) const {
-    const auto it = raw_.find(key);
-    if (it != raw_.cend()) {
+    const auto it = map_.find(key);
+    if (it != map_.cend()) {
       if (!it->second.empty()) return it->second.front();
     }
     return std::string();
   }
 
-  std::list<std::string> find(const char* key) const {
-    const auto it = raw_.find(key);
-    if (it != raw_.cend()) {
+  const std::list<std::string>& find(const char* key) const {
+    const auto it = map_.find(key);
+    if (it != map_.cend()) {
       return it->second;
     }
-    return std::list<std::string>();
+    return empty_list_;
   }
 
   void set(const char* key, const std::list<std::string>& list) {
-    raw_[key] = list;
+    map_[key] = list;
+    cached_raw_.clear();
   }
 
   void add(const char* key, const std::string& value) {
-    raw_[key].emplace_back(value);
+    map_[key].emplace_back(value);
+    cached_raw_.clear();
   }
 
   void parseFrom(const std::string& buffer);
