@@ -23,7 +23,7 @@ void PushOptions::parseFrom(const std::string &input) {
 
   raw_.clear();
 
-  token = strtok_s(buffer.data(), ",", &context);
+  token = strtok_s((char*) buffer.data(), ",", &context);
   while (token) {
     char* value = nullptr;
     const char* key = strtok_s(token, " ", &value);

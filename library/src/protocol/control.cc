@@ -13,10 +13,8 @@
 
 #include <openssl/rand.h>
 
-#ifdef _MSC_VER
-#define STRTOK_R_FUNCTION strtok_s
-#else
-#define STRTOK_R_FUNCTION strtok_r
+#ifndef _MSC_VER
+#define strtok_s strtok_r
 #endif
 
 namespace ovpnc {
@@ -202,7 +200,7 @@ bool DataChannelOptions::deserialize(const std::string &input) {
   key_method = 0;
   tls_direction = kTlsDirectionNone;
 
-  token = STRTOK_R_FUNCTION(buffer.data(), ",", &context);
+  token = strtok_s((char*) buffer.data(), ",", &context);
   while (token) {
     if (index == 0) {
       version = token;
@@ -234,7 +232,7 @@ bool DataChannelOptions::deserialize(const std::string &input) {
       }
     }
     index++;
-    token = STRTOK_R_FUNCTION(nullptr, ",", &context);
+    token = strtok_s(nullptr, ",", &context);
   }
   return true;
 }
