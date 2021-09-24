@@ -20,7 +20,7 @@ static void dump(const void* ptr, size_t len) {
 }
 
 int mainWrapped() {
-  auto logger = jcu::unio::createDefaultLogger([](auto &line) -> void {
+  auto logger = jcu::unio::createDefaultLogger([](auto level, auto &line) -> void {
     std::cout << line << std::endl;
   });
 
