@@ -28,12 +28,11 @@ static int alignedSize(int size, int align) {
 }
 
 std::shared_ptr<Multiplexer> Multiplexer::create(
-    std::shared_ptr<jcu::unio::Loop> loop,
-    std::shared_ptr<jcu::unio::Logger> logger,
+    const jcu::unio::BasicParams& basic_params,
     std::shared_ptr<jcu::unio::Resource> io_parent,
     std::shared_ptr<ReliableLayer> reliable
 ) {
-  std::shared_ptr<Multiplexer> instance(new Multiplexer(loop, logger, io_parent, reliable));
+  std::shared_ptr<Multiplexer> instance(new Multiplexer(basic_params, io_parent, reliable));
   instance->self_ = instance;
   return instance;
 }
@@ -43,17 +42,16 @@ std::shared_ptr<Multiplexer> Multiplexer::shared() const {
 }
 
 Multiplexer::Multiplexer(
-    std::shared_ptr<jcu::unio::Loop> loop,
-    std::shared_ptr<jcu::unio::Logger> logger,
+    const jcu::unio::BasicParams &basic_params,
     std::shared_ptr<jcu::unio::Resource> io_parent,
     std::shared_ptr<ReliableLayer> reliable
 ) :
     io_parent_(io_parent),
-    loop_(loop),
-    logger_(logger),
+    basic_params_(basic_params),
     reliable_(reliable),
     local_data_packet_id_(0),
-    peer_data_packet_id_(0) {
+    peer_data_packet_id_(0),
+    connect_callback_(nullptr) {
 }
 
 bool Multiplexer::isTLS() const {
@@ -81,15 +79,31 @@ int Multiplexer::getRequiredDataPlainBufferOffset() const {
 }
 
 void Multiplexer::init(int mtu) {
+  std::shared_ptr<Multiplexer> self(self_.lock());
   mtu_ = mtu;
 
   send_message_buffer_ = std::make_shared<BufferWithHeader>(getRequiredMessageBufferOffset(), 65536);
   recv_message_buffer_ = std::make_shared<ReceiveBuffer>(65536);
   reliable_->init(self_.lock(), send_message_buffer_);
+  reliable_->on<jcu::unio::SocketConnectEvent>([self](auto& event, auto& resource) -> void {
+    self->emitConnectEvent(self->connect_callback_, event);
+  });
 }
 
-void Multiplexer::start(const VPNConfig& vpn_config) {
+void Multiplexer::start(const VPNConfig &vpn_config) {
   vpn_config_ = vpn_config;
+}
+
+void Multiplexer::emitConnectEvent(jcu::unio::CompletionOnceCallback<jcu::unio::SocketConnectEvent>& callback, jcu::unio::SocketConnectEvent& event) {
+  if (callback) {
+    callback(event, *this);
+  } else {
+    if (event.hasError()) {
+      emit<jcu::unio::ErrorEvent>(event.error());
+    } else {
+      emit<jcu::unio::SocketConnectEvent>(event);
+    }
+  }
 }
 
 void Multiplexer::connect(jcu::unio::CompletionOnceCallback<jcu::unio::SocketConnectEvent> callback) {
@@ -99,40 +113,46 @@ void Multiplexer::connect(jcu::unio::CompletionOnceCallback<jcu::unio::SocketCon
   std::shared_ptr<Multiplexer> self(self_.lock());
 
   if (vpn_config_.protocol == kTransportTcp) {
-    parent_socket_ = jcu::unio::TCPSocket::create(loop_, logger_);
+    parent_socket_ = jcu::unio::TCPSocket::create(basic_params_);
   } else {
     return;
   }
+  parent_socket_->init();
 
   auto connect_param = std::make_shared<jcu::unio::SockAddrConnectParam<sockaddr_in>>();
   rc = uv_ip4_addr(vpn_config_.remote_host.c_str(), vpn_config_.remote_port, connect_param->getSockAddr());
   if (rc) {
-    jcu::unio::SocketConnectEvent event{jcu::unio::UvErrorEvent{rc, 0}};
-    callback(event, *io_parent);
+    jcu::unio::SocketConnectEvent event { jcu::unio::UvErrorEvent::createIfNeeded(rc) };
+    emitConnectEvent(callback, event);
+    return ;
   }
+
+  parent_socket_->on<jcu::unio::SocketReadEvent>([self](
+      jcu::unio::SocketReadEvent &event,
+      jcu::unio::Resource &handle
+  ) -> void {
+    if (event.hasError()) {
+      // TODO: ERROR HANDLING
+      self->basic_params_.logger->logf(jcu::unio::Logger::kLogError,
+                                       "SOME ERROR... %d / %s",
+                                       event.error().code(),
+                                       event.error().what());
+      return;
+    }
+    self->onRead(dynamic_cast<ReceiveBuffer *>(event.buffer()));
+  });
   parent_socket_->connect(
       connect_param,
-      [self, callback = std::move(callback)](jcu::unio::SocketConnectEvent &event,
-                                             jcu::unio::Resource &handle) mutable -> void {
+      [self, callback = std::move(callback)](
+          jcu::unio::SocketConnectEvent &event,
+          jcu::unio::Resource &handle
+      ) mutable -> void {
         if (event.hasError()) {
-          callback(event, handle /* TODO: Hummm... */);
+          self->emitConnectEvent(callback, event);
           return;
         }
-        self->parent_socket_->read(
-            self->recv_message_buffer_,
-            [self](jcu::unio::SocketReadEvent &event,
-                   jcu::unio::Resource &handle) -> void {
-              if (event.hasError()) {
-                // TODO: ERROR HANDLING
-                self->logger_->logf(jcu::unio::Logger::kLogError,
-                                    "SOME ERROR... %d / %s",
-                                    event.error().code(),
-                                    event.error().what());
-                return;
-              }
-              self->onRead(dynamic_cast<ReceiveBuffer *>(event.buffer()));
-            });
-
+        self->connect_callback_ = std::move(callback);
+        self->parent_socket_->read(self->recv_message_buffer_);
         self->reliable_->doNextOperationAndSendLazyAcks(nullptr);
       });
 }
@@ -197,10 +217,8 @@ void Multiplexer::handleReceivedPacket(ReliableLayer::LazyAckContext &ack_contex
   ReliableLayer::UnwrapResult result =
       reliable_->unwrap(ack_context, opcode, key_id, data, remaining_length, read_buffer_.get());
   if (result & ReliableLayer::kUnwrapData) {
-    if (read_callback_) {
-      jcu::unio::SocketReadEvent event{read_buffer_.get()};
-      read_callback_(event, *this);
-    }
+    jcu::unio::SocketReadEvent event{read_buffer_.get()};
+    emit(event);
   }
 }
 
@@ -245,16 +263,13 @@ bool Multiplexer::isHandshaked() const {
 }
 
 void Multiplexer::read(
-    std::shared_ptr<jcu::unio::Buffer> buffer,
-    jcu::unio::CompletionManyCallback<jcu::unio::SocketReadEvent> callback
+    std::shared_ptr<jcu::unio::Buffer> buffer
 ) {
   read_buffer_ = buffer;
-  read_callback_ = std::move(callback);
 }
 
 void Multiplexer::cancelRead() {
   read_buffer_.reset();
-  read_callback_ = nullptr;
 }
 
 void Multiplexer::write(
@@ -275,6 +290,15 @@ void Multiplexer::write(
 
 void Multiplexer::close() {
   cancelRead();
+}
+
+int Multiplexer::bind(std::shared_ptr<jcu::unio::BindParam> bind_param) {
+  return UV__EINVAL;
+}
+
+void Multiplexer::_init() {
+  jcu::unio::InitEvent event;
+  emitInit(std::move(event));
 }
 
 //endregion

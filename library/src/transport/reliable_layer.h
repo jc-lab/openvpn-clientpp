@@ -12,6 +12,7 @@
 
 #include <stdint.h>
 #include <memory>
+#include <mutex>
 
 #include <jcu-unio/buffer.h>
 #include <jcu-unio/timer.h>
@@ -40,7 +41,7 @@ typedef uint32_t packet_id_t;
 
 class Multiplexer;
 
-class ReliableLayer {
+class ReliableLayer : public jcu::unio::Resource, public jcu::unio::Emitter {
  public:
   template<class T>
   using CompletionOnceCallback = std::function<void(T &event)>;
@@ -196,10 +197,10 @@ class ReliableLayer {
  private:
   class SSLSocketMiddleware;
 
+  std::mutex init_mtx_;
   std::weak_ptr<ReliableLayer> self_;
 
-  std::shared_ptr<jcu::unio::Loop> loop_;
-  std::shared_ptr<jcu::unio::Logger> logger_;
+  jcu::unio::BasicParams basic_params_;
   VPNConfig vpn_config_;
 
   std::shared_ptr<crypto::Random> random_;
@@ -207,7 +208,6 @@ class ReliableLayer {
 
   std::shared_ptr<jcu::unio::SSLSocket> ssl_socket_;
   std::shared_ptr<SSLSocketMiddleware> ssl_socket_middleware_;
-  std::shared_ptr<jcu::unio::Buffer> ssl_buffer_;
   ReliableLayer::LazyAckContext *lazy_ack_context_;
 
   Mode mode_;
@@ -228,15 +228,19 @@ class ReliableLayer {
 
   void emitPushReply(const char* data);
 
+ protected:
+  void _init();
+  std::mutex &getInitMutex() override {
+    return init_mtx_;
+  }
+
  public:
   static std::shared_ptr<ReliableLayer> create(
-      std::shared_ptr<jcu::unio::Loop> loop,
-      std::shared_ptr<jcu::unio::Logger> logger
+      const jcu::unio::BasicParams& basic_params
   );
 
   ReliableLayer(
-      std::shared_ptr<jcu::unio::Loop> loop,
-      std::shared_ptr<jcu::unio::Logger> logger
+      const jcu::unio::BasicParams& basic_params
   );
 
   bool isHandshaked() const;

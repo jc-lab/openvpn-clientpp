@@ -24,48 +24,50 @@ using namespace ::jcu::unio;
 namespace ovpnc {
 
 std::shared_ptr<Client> ClientImpl::create(
-    std::shared_ptr<jcu::unio::Loop> loop,
-    std::shared_ptr<jcu::unio::Logger> logger
+    const jcu::unio::BasicParams& basic_params
 ) {
-  std::shared_ptr<ClientImpl> instance(new ClientImpl(loop, logger));
+  std::shared_ptr<ClientImpl> instance(new ClientImpl(basic_params));
   instance->self_ = instance;
   instance->init();
   return instance;
 }
 
 std::shared_ptr<Client> Client::create(
-    std::shared_ptr<jcu::unio::Loop> loop,
-    std::shared_ptr<jcu::unio::Logger> logger
+    const jcu::unio::BasicParams& basic_params
 ) {
-  return ClientImpl::create(std::move(loop), std::move(logger));
+  return ClientImpl::create(basic_params);
 }
 
-ClientImpl::ClientImpl(std::shared_ptr<jcu::unio::Loop> loop, std::shared_ptr<jcu::unio::Logger> logger) :
-    loop_(loop),
-    logger_(logger),
+ClientImpl::ClientImpl(const jcu::unio::BasicParams& basic_params) :
+    basic_params_(basic_params),
     auto_reconnect_(false) {
-  logger_->logf(jcu::unio::Logger::kLogDebug, "Client: Construct");
+  basic_params.logger->logf(jcu::unio::Logger::kLogDebug, "Client: Construct");
 }
 
 ClientImpl::~ClientImpl() {
-  logger_->logf(jcu::unio::Logger::kLogDebug, "Client: Deconstruct");
+  basic_params_.logger->logf(jcu::unio::Logger::kLogDebug, "Client: Deconstruct");
 }
 
 std::shared_ptr<Client> ClientImpl::shared() const {
   return self_.lock();
 }
 
-void ClientImpl::init() {
+void ClientImpl::_init() {
   reliable_ = transport::ReliableLayer::create(
-      loop_,
-      logger_
+      basic_params_
   );
   multiplexer_ = transport::Multiplexer::create(
-      loop_,
-      logger_,
+      basic_params_,
       self_.lock(),
       reliable_
   );
+  std::shared_ptr<ClientImpl> self(self_.lock());
+  multiplexer_->on<jcu::unio::SocketReadEvent>([self](auto& event, auto& resource) -> void {
+    self->emit(event);
+  });
+
+  jcu::unio::InitEvent event;
+  emitInit(std::move(event));
 }
 
 void ClientImpl::setAutoReconnect(bool auto_reconnect) {
@@ -90,22 +92,17 @@ bool ClientImpl::connectImpl() {
   int mtu = 1400;
   multiplexer_->init(mtu);
 
-  multiplexer_->connect([](jcu::unio::SocketConnectEvent &event, jcu::unio::Resource &handle) -> void {
-    fprintf(stderr, "multiplexer->connect ok\n");
+  multiplexer_->connect([self](jcu::unio::SocketConnectEvent &event, jcu::unio::Resource &handle) -> void {
+    self->emit(event);
   });
 
   return true;
 }
 
 void ClientImpl::read(
-    std::shared_ptr<Buffer> buffer,
-    CompletionManyCallback<SocketReadEvent> callback
+    std::shared_ptr<Buffer> buffer
 ) {
-  std::shared_ptr<ClientImpl> self(self_.lock());
-  multiplexer_->read(std::move(buffer),
-                     [self, callback = std::move(callback)](auto &event, auto &resource) mutable -> void {
-                       callback(event, *self);
-                     });
+  multiplexer_->read(std::move(buffer));
 }
 
 void ClientImpl::cancelRead() {
@@ -118,8 +115,13 @@ void ClientImpl::write(
 ) {
   std::shared_ptr<ClientImpl> self(self_.lock());
   if (!multiplexer_->isHandshaked()) {
-    SocketWriteEvent event{UvErrorEvent{UV_ENOTCONN, 0}};
-    callback(event, *self);
+    SocketWriteEvent event { UvErrorEvent::createIfNeeded(UV_ENOTCONN) };
+    if (callback) {
+      callback(event, *self);
+    } else {
+      if (event.hasError()) emit(event.error());
+      else emit(event);
+    }
     return;
   }
   multiplexer_->write(
@@ -134,8 +136,13 @@ void ClientImpl::connect(
     CompletionOnceCallback<SocketConnectEvent> callback
 ) {
   // DO NOT USE IT
-  SocketConnectEvent event{UvErrorEvent{UV_ENOTSUP, 0}};
-  callback(event, *this);
+  SocketConnectEvent event { UvErrorEvent::createIfNeeded(UV_ENOTSUP) };
+  if (callback) {
+    callback(event, *this);
+  } else {
+    if (event.hasError()) emit(event.error());
+    else emit(event);
+  }
 }
 
 void ClientImpl::disconnect(
@@ -159,6 +166,18 @@ void ClientImpl::close() {
 void ClientImpl::onPushReply(std::function<void(const PushOptions& options)> callback) {
   assert(reliable_.get());
   reliable_->onPushReply(std::move(callback));
+}
+
+int ClientImpl::bind(std::shared_ptr<BindParam> bind_param) {
+  return UV__EINVAL;
+}
+
+int ClientImpl::listen(int backlog) {
+  return UV__EINVAL;
+}
+
+int ClientImpl::accept(std::shared_ptr<StreamSocket> client) {
+  return UV__EINVAL;
 }
 
 } // namespace ovpnc

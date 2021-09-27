@@ -90,8 +90,7 @@ namespace transport {
 class Multiplexer : public jcu::unio::Socket, public jcu::unio::SharedObject<Multiplexer> {
  public:
   static std::shared_ptr<Multiplexer> create(
-      std::shared_ptr<jcu::unio::Loop> loop,
-      std::shared_ptr<jcu::unio::Logger> logger,
+      const jcu::unio::BasicParams& basic_params,
       std::shared_ptr<jcu::unio::Resource> io_parent,
       std::shared_ptr<ReliableLayer> reliable
   );
@@ -100,8 +99,7 @@ class Multiplexer : public jcu::unio::Socket, public jcu::unio::SharedObject<Mul
   std::weak_ptr<Multiplexer> self_;
   std::weak_ptr<jcu::unio::Resource> io_parent_;
 
-  std::shared_ptr<jcu::unio::Loop> loop_;
-  std::shared_ptr<jcu::unio::Logger> logger_;
+  jcu::unio::BasicParams basic_params_;
 
   VPNConfig vpn_config_;
   std::shared_ptr<ReliableLayer> reliable_;
@@ -127,17 +125,19 @@ class Multiplexer : public jcu::unio::Socket, public jcu::unio::SharedObject<Mul
    * Plain IP Protocol Buffer
    */
   std::shared_ptr<jcu::unio::Buffer> read_buffer_;
-  jcu::unio::CompletionManyCallback<jcu::unio::SocketReadEvent> read_callback_;
+
+  jcu::unio::CompletionOnceCallback<jcu::unio::SocketConnectEvent> connect_callback_;
 
   Multiplexer(
-      std::shared_ptr<jcu::unio::Loop> loop,
-      std::shared_ptr<jcu::unio::Logger> logger,
+      const jcu::unio::BasicParams& basic_params,
       std::shared_ptr<jcu::unio::Resource> io_parent,
       std::shared_ptr<ReliableLayer> reliable
   );
 
   void onRead(ReceiveBuffer *buffer);
   void handleReceivedPacket(ReliableLayer::LazyAckContext &ack_context, uint16_t packet_id, ReceiveBuffer *buffer);
+
+  void emitConnectEvent(jcu::unio::CompletionOnceCallback<jcu::unio::SocketConnectEvent>& callback, jcu::unio::SocketConnectEvent& event);
 
  public:
   std::shared_ptr<Multiplexer> shared() const override;
@@ -150,6 +150,12 @@ class Multiplexer : public jcu::unio::Socket, public jcu::unio::SharedObject<Mul
   void init(int mtu);
 
   void start(const VPNConfig& vpn_config);
+
+  /**
+   * must call in loop-thread
+   *
+   * @param callback
+   */
   void connect(jcu::unio::CompletionOnceCallback<jcu::unio::SocketConnectEvent> callback);
 
   bool isTLS() const;
@@ -246,8 +252,7 @@ class Multiplexer : public jcu::unio::Socket, public jcu::unio::SharedObject<Mul
   bool isHandshaked() const;
 
   void read(
-      std::shared_ptr<jcu::unio::Buffer> buffer,
-      jcu::unio::CompletionManyCallback<jcu::unio::SocketReadEvent> callback
+      std::shared_ptr<jcu::unio::Buffer> buffer
   ) override;
   void cancelRead() override;
   void write(
@@ -255,6 +260,11 @@ class Multiplexer : public jcu::unio::Socket, public jcu::unio::SharedObject<Mul
       jcu::unio::CompletionOnceCallback<jcu::unio::SocketWriteEvent> callback
   ) override;
   void close() override;
+
+  int bind(std::shared_ptr<jcu::unio::BindParam> bind_param) override;
+
+ protected:
+  void _init() override;
 };
 
 } // namespace transport

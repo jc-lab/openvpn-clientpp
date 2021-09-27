@@ -20,11 +20,13 @@ static void dump(const void* ptr, size_t len) {
 }
 
 int mainWrapped() {
-  auto logger = jcu::unio::createDefaultLogger([](auto level, auto &line) -> void {
+  auto logger = jcu::unio::createDefaultLogger([](jcu::unio::Logger::LogLevel level, auto &line) -> void {
     std::cout << line << std::endl;
   });
-
   auto loop = jcu::unio::UnsafeLoop::fromDefault();
+
+  jcu::unio::BasicParams basic_params { loop, logger };
+
   loop->init();
 
   std::shared_ptr<jcu::unio::openssl::OpenSSLProvider> openssl_provider = jcu::unio::openssl::OpenSSLProvider::create();
@@ -50,26 +52,31 @@ int mainWrapped() {
     SSL_CTX_use_certificate_file(ctx, "D:\\jcworkspace\\openvpn-cpp\\test\\client.pem", SSL_FILETYPE_PEM);
   }
 
-  auto client = ovpnc::Client::create(loop, logger);
-  ovpnc::VPNConfig config { };
-  config.ssl_context = openssl_context;
-  config.protocol = ovpnc::kTransportTcp;
-  config.remote_host = "192.168.44.136"; // 44.167
-  config.remote_port = 61194;
-//  config.remote_port = 61195;
-  client->setAutoReconnect(true);
-  client->connect(config);
-
-  client->onPushReply([](auto& data) -> void {
-    fprintf(stderr, "PUSH_REPLY: %s\n", data.c_str());
-  });
-  client->read(jcu::unio::createFixedSizeBuffer(65536), [](auto& event, auto& resource) -> void {
+  auto client = ovpnc::Client::create(basic_params);
+  client->on<jcu::unio::SocketReadEvent>([](auto& event, auto& resource) -> void {
     auto buffer = event.buffer();
     fprintf(stderr, "CLIENT READ [%d]: ", buffer->remaining());
     dump(buffer->data(), buffer->remaining());
   });
+  client->onPushReply([](auto& data) -> void {
+    fprintf(stderr, "PUSH_REPLY: %s\n", data.c_str());
+  });
+  client->on<jcu::unio::SocketConnectEvent>([](auto& event, auto& resource) -> void {
+    auto& client = dynamic_cast<ovpnc::Client&>(resource);
+    client.read(jcu::unio::createFixedSizeBuffer(65536));
+  });
+  client->once<jcu::unio::InitEvent>([openssl_context, client](jcu::unio::InitEvent& event, jcu::unio::Resource& handle) -> void {
+    ovpnc::VPNConfig config { };
+    config.ssl_context = openssl_context;
+    config.protocol = ovpnc::kTransportTcp;
+    config.remote_host = "192.168.44.136"; // 44.167
+    config.remote_port = 61194;
+//  config.remote_port = 61195;
+    client->setAutoReconnect(true);
+    client->connect(config);
+  });
 
-  auto timer = jcu::unio::Timer::create(loop, logger);
+  auto timer = jcu::unio::Timer::create(basic_params);
   timer->on<jcu::unio::TimerEvent>([client](auto& event, auto& handle) -> void {
     unsigned char data[] = {0x45, 0x00, 0x00, 0x54, 0xcc, 0x5a, 0x40, 0x00, 0x40, 0x01,
                             0x54, 0x31,
@@ -85,7 +92,10 @@ int mainWrapped() {
 
     });
   });
-  timer->start(std::chrono::milliseconds { 3000 }, std::chrono::milliseconds { 1500 });
+  timer->once<jcu::unio::InitEvent>([](jcu::unio::InitEvent& event, jcu::unio::Resource& resource) -> void {
+    auto& timer = dynamic_cast<jcu::unio::Timer&>(resource);
+    timer.start(std::chrono::milliseconds { 3000 }, std::chrono::milliseconds { 1500 });
+  });
 
   uv_run(loop->get(), UV_RUN_DEFAULT);
   loop->uninit();

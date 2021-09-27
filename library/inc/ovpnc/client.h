@@ -26,7 +26,7 @@ class Client : public jcu::unio::StreamSocket, public jcu::unio::SharedObject<Cl
  public:
   virtual ~Client() = default;
 
-  static std::shared_ptr<Client> create(std::shared_ptr<jcu::unio::Loop> loop, std::shared_ptr<jcu::unio::Logger> logger);
+  static std::shared_ptr<Client> create(const jcu::unio::BasicParams& basic_params);
 
   virtual void setAutoReconnect(bool auto_reconnect) = 0;
   virtual bool connect(const VPNConfig &vpn_config) = 0;

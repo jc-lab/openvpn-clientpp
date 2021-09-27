@@ -28,8 +28,7 @@ class ClientImpl : public Client {
  private:
   std::weak_ptr<ClientImpl> self_;
 
-  std::shared_ptr<jcu::unio::Loop> loop_;
-  std::shared_ptr<jcu::unio::Logger> logger_;
+  jcu::unio::BasicParams basic_params_;
 
   VPNConfig vpn_config_;
   bool auto_reconnect_;
@@ -37,14 +36,14 @@ class ClientImpl : public Client {
   std::shared_ptr<transport::ReliableLayer> reliable_;
   std::shared_ptr<transport::Multiplexer> multiplexer_;
 
-  void init();
+ protected:
+  void _init() override;
 
  public:
-  ClientImpl(std::shared_ptr<jcu::unio::Loop> loop, std::shared_ptr<jcu::unio::Logger> logger);
+  ClientImpl(const jcu::unio::BasicParams& basic_params);
   ~ClientImpl() override;
   static std::shared_ptr<Client> create(
-      std::shared_ptr<jcu::unio::Loop> loop,
-      std::shared_ptr<jcu::unio::Logger> logger
+      const jcu::unio::BasicParams& basic_params
   );
 
   void setAutoReconnect(bool auto_reconnect) override;
@@ -54,13 +53,12 @@ class ClientImpl : public Client {
   void close() override;
 
   void read(
-      std::shared_ptr<jcu::unio::Buffer> buffer,
-      jcu::unio::CompletionManyCallback<jcu::unio::SocketReadEvent> callback
+      std::shared_ptr<jcu::unio::Buffer> buffer
   ) override;
   void cancelRead() override;
   void write(
       std::shared_ptr<jcu::unio::Buffer> buffer,
-      jcu::unio::CompletionOnceCallback<jcu::unio::SocketWriteEvent> callback
+      jcu::unio::CompletionOnceCallback<jcu::unio::SocketWriteEvent> callback = nullptr
   ) override;
 
   /**
@@ -75,6 +73,12 @@ class ClientImpl : public Client {
   void disconnect(
       jcu::unio::CompletionOnceCallback<jcu::unio::SocketDisconnectEvent> callback
   ) override;
+
+  int bind(std::shared_ptr<jcu::unio::BindParam> bind_param) override;
+  int listen(int backlog) override;
+  int accept(std::shared_ptr<StreamSocket> client) override;
+
+ public:
   bool isConnected() const override;
   bool isHandshaked() const override;
 

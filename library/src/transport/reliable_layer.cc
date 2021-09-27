@@ -76,18 +76,14 @@ class ReliableLayer::SSLSocketMiddleware : public jcu::unio::StreamSocket {
   }
 
   void emitRead() {
-    if (read_callback_) {
-      jcu::unio::SocketReadEvent event{read_buffer_.get()};
-      read_callback_(event, *this);
-    }
+    jcu::unio::SocketReadEvent event { read_buffer_.get() };
+    emit(event);
   }
 
   void read(
-      std::shared_ptr<jcu::unio::Buffer> buffer,
-      jcu::unio::CompletionManyCallback<jcu::unio::SocketReadEvent> callback
+      std::shared_ptr<jcu::unio::Buffer> buffer
   ) override {
     read_buffer_ = buffer;
-    read_callback_ = std::move(callback);
   }
 
   void cancelRead() override {
@@ -150,23 +146,35 @@ class ReliableLayer::SSLSocketMiddleware : public jcu::unio::StreamSocket {
   void close() override {
     read_callback_ = nullptr;
   }
+
+  int bind(std::shared_ptr<jcu::unio::BindParam> bind_param) override {
+    return UV__EINVAL;
+  }
+  int listen(int backlog) override {
+    return UV__EINVAL;
+  }
+  int accept(std::shared_ptr<StreamSocket> client) override {
+    return UV__EINVAL;
+  }
+ protected:
+  void _init() override {
+
+  }
 };
 
 std::shared_ptr<ReliableLayer> ReliableLayer::create(
-    std::shared_ptr<jcu::unio::Loop> loop,
-    std::shared_ptr<jcu::unio::Logger> logger
+    const jcu::unio::BasicParams& basic_params
 ) {
-  auto instance = std::make_shared<ReliableLayer>(std::move(loop), std::move(logger));
+  auto instance = std::make_shared<ReliableLayer>(basic_params);
   instance->self_ = instance;
+  instance->_init();
   return std::move(instance);
 }
 
 ReliableLayer::ReliableLayer(
-    std::shared_ptr<jcu::unio::Loop> loop,
-    std::shared_ptr<jcu::unio::Logger> logger
+    const jcu::unio::BasicParams& basic_params
 ) :
-    loop_(std::move(loop)),
-    logger_(std::move(logger)),
+    basic_params_(basic_params),
     mode_(kClientMode),
     peer_inited_(false),
     lazy_ack_context_(nullptr),
@@ -197,6 +205,11 @@ const ReliableLayer::SessionContext &ReliableLayer::getServerSession() const {
   else return key_state_.peer;
 }
 
+void ReliableLayer::_init() {
+  jcu::unio::InitEvent event;
+  emitInit(std::move(event));
+}
+
 void ReliableLayer::init(
     std::shared_ptr<Multiplexer> multiplexer,
     std::shared_ptr<jcu::unio::Buffer> send_message_buffer
@@ -208,10 +221,13 @@ void ReliableLayer::init(
 
   if (!vpn_config_.psk_mode) {
     ssl_socket_middleware_ = std::make_shared<SSLSocketMiddleware>(self);
-    ssl_buffer_ = jcu::unio::createFixedSizeBuffer(8192);
-    ssl_socket_ = jcu::unio::SSLSocket::create(loop_, logger_, vpn_config_.ssl_context);
+    ssl_socket_ = jcu::unio::SSLSocket::create(basic_params_, vpn_config_.ssl_context);
+    ssl_socket_->init();
     ssl_socket_->setParent(ssl_socket_middleware_);
     ssl_socket_->setSocketOutboundBuffer(send_message_buffer_);
+    ssl_socket_->on<jcu::unio::SocketReadEvent>([self](auto& event, auto& resource) -> void {
+      self->handleTlsPayload(event.buffer());
+    });
   }
 }
 
@@ -282,12 +298,13 @@ void ReliableLayer::sendWithRetry(
           packet.op_code = op_code;
           packet.packet_id = packet_id;
 
-          packet.timer = jcu::unio::Timer::create(self->loop_, self->logger_);
+          packet.timer = jcu::unio::Timer::create(self->basic_params_);
+          packet.timer->init();
           packet.timer->on<jcu::unio::TimerEvent>([self, temp_buffer, op_code, packet_id](
               jcu::unio::TimerEvent &event,
               jcu::unio::Resource &handle
           ) -> void {
-            self->logger_->logf(jcu::unio::Logger::kLogInfo, "RESEND: packet_id=%u", packet_id);
+            self->basic_params_.logger->logf(jcu::unio::Logger::kLogInfo, "RESEND: packet_id=%u", packet_id);
             auto &send_buffer = self->send_message_buffer_;
             send_buffer->clear();
             std::memcpy(send_buffer->data(), temp_buffer->data(), temp_buffer->remaining());
@@ -352,6 +369,7 @@ ReliableLayer::UnwrapResult ReliableLayer::unwrap(
       break;
     case protocol::reliable::P_DATA_V1:
     case protocol::reliable::P_DATA_V2:
+      // TODO: 상태 체크 (Null exception)
       return unwrapDataPayload(opcode, key_id, data, length, output);
   }
 
@@ -370,7 +388,7 @@ bool ReliableLayer::handleControlPayload(
   protocol::reliable::ControlV1Payload control_payload{op_code};
   int proceed_length = control_payload.deserializeFrom(data, length);
   if (proceed_length < 0) {
-    logger_->logf(jcu::unio::Logger::kLogError, "ReliableLayer: handleControlPayload: deserialize failed");
+    basic_params_.logger->logf(jcu::unio::Logger::kLogError, "ReliableLayer: handleControlPayload: deserialize failed");
     return false;
   }
 
@@ -401,10 +419,7 @@ bool ReliableLayer::handleControlPayload(
     param->setHostname(vpn_config_.remote_host);
     ssl_socket_->connect(param, [self](auto &event, auto &resource) -> void {
       auto &handle = dynamic_cast<jcu::unio::SSLSocket &>(resource);
-      fprintf(stderr, "TLS HANDSHAKED!!!!!!!!!!!!!!!\n");
-      handle.read(self->ssl_buffer_, [self](auto &event, auto &resource) -> void {
-        self->handleTlsPayload(event.buffer());
-      });
+      handle.read(jcu::unio::createFixedSizeBuffer(8192));
       self->key_state_.state = kKeyStateStart;
     });
   }
@@ -429,7 +444,11 @@ void ReliableLayer::handleTlsPayload(jcu::unio::Buffer* buffer) {
     generateKeyExpansion(&temp_key2);
     initKeyContexts(key_state_, &temp_key2, "Data Channel");
     key_state_.state = kKeyStateEstablished;
-    logger_->logf(jcu::unio::Logger::kLogDebug, "ReliableLayer: kEstablishedState");
+
+    basic_params_.logger->logf(jcu::unio::Logger::kLogDebug, "ReliableLayer: kEstablishedState");
+
+    jcu::unio::SocketConnectEvent event;
+    emit(event);
 
     startPushRequest();
   } else {
@@ -453,7 +472,7 @@ bool ReliableLayer::handleAckV1Payload(
   protocol::reliable::AckV1Payload ack_payload{op_code};
   int proceed_length = ack_payload.deserializeFrom(data, length);
   if (proceed_length < 0) {
-    logger_->logf(jcu::unio::Logger::kLogError, "ReliableLayer: handleAckV1Payload: deserialize failed");
+    basic_params_.logger->logf(jcu::unio::Logger::kLogError, "ReliableLayer: handleAckV1Payload: deserialize failed");
     return false;
   }
 
@@ -470,7 +489,7 @@ bool ReliableLayer::preprocessPayload(const protocol::reliable::SessionReliableP
   // Check ACK
   if (payload.hasRemoteSessionId()) {
     if (std::memcmp(key_state_.local.session_id, payload.remoteSessionId(), sizeof(key_state_.local.session_id)) != 0) {
-      logger_->logf(jcu::unio::Logger::kLogError, "ReliableLayer: preprocessPayload: invalid session id");
+      basic_params_.logger->logf(jcu::unio::Logger::kLogError, "ReliableLayer: preprocessPayload: invalid session id");
       return false;
     }
   }
@@ -495,7 +514,7 @@ void ReliableLayer::handleReceivedAcks(const protocol::reliable::SessionReliable
   const uint32_t *packet_id_array = payload.ackPacketIdArray().data();
 
   for (int i = 0; i < length; i++) {
-    logger_->logf(jcu::unio::Logger::kLogTrace, "ACK Received: packet_id=%u", packet_id_array[i]);
+    basic_params_.logger->logf(jcu::unio::Logger::kLogTrace, "ACK Received: packet_id=%u", packet_id_array[i]);
   }
 
   for (auto it = send_packets_.begin(); it != send_packets_.end();) {
@@ -610,6 +629,10 @@ ReliableLayer::UnwrapResult ReliableLayer::unwrapDataPayload(
   const unsigned char* tag_ptr = nullptr;
 
   int rc = 0;
+
+  if (!output) {
+    return UnwrapResult::kUnwrapFailed;
+  }
 
   /*
    * P_DATA message content:
@@ -884,7 +907,8 @@ void ReliableLayer::startPushRequest() {
   if (push_request_timer_) {
     push_request_timer_->close();
   }
-  push_request_timer_ = jcu::unio::Timer::create(loop_, logger_);
+  push_request_timer_ = jcu::unio::Timer::create(basic_params_);
+  push_request_timer_->init();
   push_request_timer_->on<jcu::unio::TimerEvent>([self](auto& event, auto& resource) -> void {
     self->sendPushRequest();
   });
