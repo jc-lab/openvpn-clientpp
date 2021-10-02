@@ -66,6 +66,7 @@ ReliableLayer::SessionContext::SessionContext() {
 
 class ReliableLayer::SSLSocketMiddleware : public jcu::unio::StreamSocket {
  public:
+  std::weak_ptr<SSLSocketMiddleware> self_;
   std::shared_ptr<ReliableLayer> reliable_;
 
   std::shared_ptr<jcu::unio::Buffer> read_buffer_;
@@ -73,6 +74,10 @@ class ReliableLayer::SSLSocketMiddleware : public jcu::unio::StreamSocket {
 
   SSLSocketMiddleware(std::shared_ptr<ReliableLayer> reliable) :
       reliable_(reliable) {
+  }
+
+  std::shared_ptr<Resource> sharedAsResource() override {
+    return self_.lock();
   }
 
   void emitRead() {
@@ -181,6 +186,10 @@ ReliableLayer::ReliableLayer(
     data_opcode_(protocol::reliable::P_DATA_V1) {
 }
 
+std::shared_ptr<jcu::unio::Resource> ReliableLayer::sharedAsResource() {
+  return self_.lock();
+}
+
 bool ReliableLayer::isHandshaked() const {
   return key_state_.state == kKeyStateEstablished;
 }
@@ -221,6 +230,8 @@ void ReliableLayer::init(
 
   if (!vpn_config_.psk_mode) {
     ssl_socket_middleware_ = std::make_shared<SSLSocketMiddleware>(self);
+    ssl_socket_middleware_->self_ = ssl_socket_middleware_;
+
     ssl_socket_ = jcu::unio::SSLSocket::create(basic_params_, vpn_config_.ssl_context);
     ssl_socket_->init();
     ssl_socket_->setParent(ssl_socket_middleware_);
@@ -1019,6 +1030,16 @@ void ReliableLayer::onPushReply(std::function<void(const PushOptions& options)> 
     callback(last_push_reply_);
   }
   push_reply_callback_ = std::move(callback);
+}
+
+void ReliableLayer::invokeInitEventCallback(
+    std::function<void(jcu::unio::InitEvent&, Resource&)> &&callback,
+    jcu::unio::InitEvent &event
+) {
+  std::shared_ptr<ReliableLayer> self(self_.lock());
+  basic_params_.loop->sendQueuedTask([self, callback = std::move(callback), &event]() mutable -> void {
+    callback(event, *self);
+  });
 }
 
 //endregion

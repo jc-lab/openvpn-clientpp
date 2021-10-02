@@ -39,8 +39,8 @@ std::shared_ptr<Client> Client::create(
 }
 
 ClientImpl::ClientImpl(const jcu::unio::BasicParams& basic_params) :
-    basic_params_(basic_params),
     auto_reconnect_(false) {
+  basic_params_ = basic_params;
   basic_params.logger->logf(jcu::unio::Logger::kLogDebug, "Client: Construct");
 }
 

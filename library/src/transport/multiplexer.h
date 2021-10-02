@@ -139,6 +139,11 @@ class Multiplexer : public jcu::unio::Socket, public jcu::unio::SharedObject<Mul
 
   void emitConnectEvent(jcu::unio::CompletionOnceCallback<jcu::unio::SocketConnectEvent>& callback, jcu::unio::SocketConnectEvent& event);
 
+ protected:
+  std::shared_ptr<Resource> sharedAsResource() override {
+    return shared();
+  }
+
  public:
   std::shared_ptr<Multiplexer> shared() const override;
 

@@ -229,10 +229,14 @@ class ReliableLayer : public jcu::unio::Resource, public jcu::unio::Emitter {
   void emitPushReply(const char* data);
 
  protected:
+  std::shared_ptr<jcu::unio::Resource> sharedAsResource() override;
   void _init();
   std::mutex &getInitMutex() override {
     return init_mtx_;
   }
+  void invokeInitEventCallback(
+      std::function<void(jcu::unio::InitEvent & , Resource &)> &&callback, jcu::unio::InitEvent &event
+  ) override;
 
  public:
   static std::shared_ptr<ReliableLayer> create(
@@ -243,6 +247,7 @@ class ReliableLayer : public jcu::unio::Resource, public jcu::unio::Emitter {
       const jcu::unio::BasicParams& basic_params
   );
 
+ public:
   bool isHandshaked() const;
 
   SessionContext &getClientSession();

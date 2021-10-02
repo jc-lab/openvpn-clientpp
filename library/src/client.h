@@ -28,8 +28,6 @@ class ClientImpl : public Client {
  private:
   std::weak_ptr<ClientImpl> self_;
 
-  jcu::unio::BasicParams basic_params_;
-
   VPNConfig vpn_config_;
   bool auto_reconnect_;
 
@@ -37,6 +35,9 @@ class ClientImpl : public Client {
   std::shared_ptr<transport::Multiplexer> multiplexer_;
 
  protected:
+  std::shared_ptr<jcu::unio::Resource> sharedAsResource() override {
+    return shared();
+  }
   void _init() override;
 
  public:
@@ -50,6 +51,7 @@ class ClientImpl : public Client {
   bool connect(const VPNConfig &vpn_config) override;
 
   std::shared_ptr<Client> shared() const override;
+
   void close() override;
 
   void read(

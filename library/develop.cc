@@ -59,7 +59,7 @@ int mainWrapped() {
     dump(buffer->data(), buffer->remaining());
   });
   client->onPushReply([](auto& data) -> void {
-    fprintf(stderr, "PUSH_REPLY: %s\n", data.c_str());
+    fprintf(stderr, "PUSH_REPLY: %s\n", data.cachedRaw().c_str());
   });
   client->on<jcu::unio::SocketConnectEvent>([](auto& event, auto& resource) -> void {
     auto& client = dynamic_cast<ovpnc::Client&>(resource);
